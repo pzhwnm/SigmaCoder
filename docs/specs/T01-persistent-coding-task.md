@@ -4,17 +4,17 @@
 
 | 字段 | 值 |
 |---|---|
-| SPEC 版本 | r3 |
+| SPEC 版本 | r4 |
 | 状态 | 草案，等待人工批准 |
 | 保证等级 | Tier 3（高保证） |
 | 来源 Ticket | https://github.com/pzhwnm/SigmaCoder/issues/2 |
 | 生成日期 | 2026-08-21 |
-| 实现状态 | 未开始 |
+| 实现状态 | setup 因许可证门禁暂停；仅有未运行的 RED 测试草稿，无产品实现 |
 | 批准边界 | 本文件获明确批准前，禁止修改实现代码、安装依赖、创建实现 worktree、提交 Git 或运行实现阶段门禁 |
 
 批准本 SPEC 表示批准本文定义的行为、失败语义、依赖清单、测试门槛和 setup plan；不表示批准向远程仓库 push、创建 PR、合并或发布。行为或 setup 发生实质变化时，必须在文末追加修订记录并重新获得批准。
 
-建议批准口令：**批准 T01 SPEC r3**。
+建议批准口令：**批准 T01 SPEC r4**。
 
 ---
 
@@ -679,8 +679,8 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 | 顺序/波动 | pytest-randomly | 至少 3 个记录 seed；并发与 kill 场景重复至少 20 次且 0 偶发失败 |
 | 真实执行 | 安装后的 sigma，在临时真实 Git 仓库及独立 OS 进程运行 | S01、S02、S05、S11、S12、S14、S15 全通过 |
 | Secret scan | detect-secrets | 真实树 0 未批准秘密；honeytoken 负控必须先失败 |
-| 供应链漏洞 | `uv lock --check`、`uv sync --frozen`、`uv run pip-audit` | lock 一致；pip-audit 任一发现默认阻断，不因“无修复版本”而放行；只有获批的 SPEC 修订可记录限时豁免 |
-| 许可证 | `uv run pip-licenses --format=json --with-system --with-authors --output-file licenses.json` 后运行 `uv run python tools/check_licenses.py licenses.json` | 直接/传递依赖仅允许 MIT、BSD-2-Clause、BSD-3-Clause、Apache-2.0、ISC、Python-2.0、PSF-2.0、MPL-2.0；unknown、custom、无法映射或 allowlist 外 SPDX 均阻断 |
+| 供应链漏洞 | `uv lock --check`、`uv sync --frozen`、`uv export --format requirements.txt --all-groups --no-emit-project --frozen --output-file build/audit-requirements.txt`、`uv run --frozen pip-audit --requirement build/audit-requirements.txt --strict` | 审计 `uv.lock` 精确锁定的全部第三方依赖并排除不可发布的本地 editable 项目；lock 一致；pip-audit 任一发现默认阻断，不因“无修复版本”而放行；只有获批的 SPEC 修订可记录限时豁免 |
+| 许可证 | `uv run pip-licenses --format=json --with-system --with-authors --ignore-packages sigmacoder --output-file licenses.json` 后运行 `uv run python tools/check_licenses.py licenses.json` | 审计全部直接/传递第三方依赖；仅允许 MIT、0BSD、BSD-2-Clause、BSD-3-Clause、Apache-2.0、ISC、Python-2.0、PSF-2.0、MPL-2.0；unknown、custom、无法映射或 allowlist 外 SPDX 均阻断 |
 | Source state | `uv run python tools/source_state.py` | 无 relevant staged、unstaged、deleted 或非忽略 untracked 源文件 |
 
 不设置硬性能阈值。design.md 的 p95 指标尚无固定参考硬件；本票只记录诊断数据，不能在普通 CI 上伪造稳定性能结论。
@@ -746,7 +746,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 - Ubuntu 运行 `uv run python tools/gauntlet.py --profile ubuntu-tier3`，必须执行本节全部层，包括两个真实 mutmut profile、Git 对抗、真实跨进程、coverage、供应链与所有负控；任何 UNAVAILABLE、skip 或 substitute 都不是通过。
 - Windows 运行 `uv run python tools/gauntlet.py --profile windows-compat`，必须执行除 mutmut 之外的全部适用层，并重点覆盖路径大小写、盘符、junction、文件锁、Git linked-worktree、SQLite/WAL 和真实多进程；mutmut 只能由同一最终 commit 的 Ubuntu 证据满足，Windows 报告不得伪造 mutation PASS。
 - `uv run python tools/gauntlet.py` 是当前平台 profile 的 fail-closed dispatcher，但单个平台 PASS 不等于 T01 完成。
-- 总判定必须同时引用同一最终 commit、同一 lock hash 和同一 SPEC r3 的 Ubuntu Tier 3 PASS 与 Windows compatibility PASS。任一平台未运行、commit 不同或报告陈旧，T01 状态只能是未完成。
+- 总判定必须同时引用同一最终 commit、同一 lock hash 和同一 SPEC r4 的 Ubuntu Tier 3 PASS 与 Windows compatibility PASS。任一平台未运行、commit 不同或报告陈旧，T01 状态只能是未完成。
 - 若尚未获得 push/CI 授权且本地没有可信 Ubuntu runner，Ubuntu 证据记为 UNAVAILABLE 并暂停完成声明；不得以 Windows 结果替代。
 
 ---
@@ -799,7 +799,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 
 - CPython 精确固定为 3.12.14，`.python-version` 必须只声明 `3.12.14`；禁止“最新 3.12.x”、范围内自动漂移或使用当前 3.12.4 生成 lock/证据。
 - uv 精确固定为 0.12.5，并在 pyproject 的 `tool.uv.required-version` 使用 `==0.12.5`；禁止使用当前 0.6.9 或其他版本生成 lock/证据。
-- SPEC r3 获批后，setup 必须先为安装 CPython 3.12.14 与 uv 0.12.5 发起必要的网络/主机写权限请求；批准范围只限这两个精确版本。安装或解析结果不精确匹配时停止，不得自动改选版本。
+- SPEC r4 获批后，setup 必须验证按 r3 批准范围安装的 CPython 3.12.14 与 uv 0.12.5；若精确工具链不存在，须重新发起仅限这两个精确版本的网络/主机写权限请求。安装或解析结果不精确匹配时停止，不得自动改选版本。
 - setup、Gauntlet 与 CI 首步分别验证 `python --version` 精确为 3.12.14、`uv --version` 精确为 0.12.5；任一不同立即失败。升级任一工具必须先修订本 SPEC 和 lock 证据。
 - pyproject.toml 声明 requires-python 大于等于 3.12 且小于 3.13。
 - 所有 Python 包通过 uv.lock 锁定精确版本与哈希。
@@ -829,7 +829,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 
 `pip-audit` 的任一发现默认阻断，包括无已知修复版本的发现。唯一豁免路径是先把漏洞 ID、包与锁定版本、影响分析、补偿措施、责任人和明确到期日写入新的 SPEC 修订并重新获批；普通配置、CLI allow、EVIDENCE 备注或“仅开发依赖”不能豁免。
 
-许可证 allowlist 精确为：MIT、BSD-2-Clause、BSD-3-Clause、Apache-2.0、ISC、Python-2.0、PSF-2.0、MPL-2.0。SPDX unknown、custom、歧义表达、无法映射名称及 allowlist 外许可证一律阻断；新增许可证只能通过 SPEC 修订和重新批准。
+许可证 allowlist 精确为：MIT、0BSD、BSD-2-Clause、BSD-3-Clause、Apache-2.0、ISC、Python-2.0、PSF-2.0、MPL-2.0。`diff-cover` 的锁定传递依赖 `chardet` 使用 0BSD；该许可证是在 r3 setup 的实际依赖解析中发现并经本次修订显式纳入，不是运行时豁免。合法 SPDX `AND`/`OR` 表达式只有在每个许可证原子均属于 allowlist 时才允许；SPDX unknown、custom、不可解析或无法映射名称及含 allowlist 外许可证原子的表达式一律阻断；新增许可证只能通过 SPEC 修订和重新批准。
 
 ### 13.6 计划文件
 
@@ -972,3 +972,4 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 - **r1 — 2026-08-21**：根据三方复核升级身份、状态机与创建恢复契约：UUIDv4 与 data-root 碰撞约束；PREPARING/HEALTHY 及 T02 只读/no-exec profile；先行 WorkspaceProvisioningAuthorized 事件、ownership nonce/action digest 与严格崩溃采纳；条件 JSON 外壳和版本化 Schema；typed payload/causation/transition 校验；F14、S18、S19；精确 Git metadata 例外；coverage/mutation/source-state 负控；Ubuntu+Windows 总门；供应链默认阻断；git author、uv pin 和 sibling 权限前置。状态：等待人工批准，r0 已被本版取代。
 - **r2 — 2026-08-21**：最终阻断修订：工具链精确锁定 CPython 3.12.14 与 uv 0.12.5，并保留旧版本仅作现状观测；恢复顺序改为先完整事件与语义校验、再投影、再识别授权和检查文件系统；TaskViewV1 用条件 oneOf 固定 AVAILABLE、NOT_CREATED、UNVERIFIED、MISSING 与 BASELINE_MISMATCH；删除不可由逻辑 sequence 证明的物理乱序错误码，并为 S09 固定每类变换的错误映射。状态：等待人工批准，r1 已被本版取代。
 - **r3 — 2026-08-21**：修正文内版本绑定，将双平台总判定、工具链规范和批准后 setup 全部绑定当前 SPEC r3，避免执行证据继续引用旧版。状态：等待人工批准，r2 已被本版取代。
+- **r4 — 2026-08-21**：r3 获人工批准后，首次真实锁定解析发现 `diff-cover 10.5.1` 必然引入 0BSD 的 `chardet 7.6.0`，触发 r3 的白名单外许可证硬阻断；本版显式把 0BSD 纳入精确 allowlist，并把漏洞审计改为从 `uv.lock` 导出全部第三方依赖后审计，以排除本地 editable 项目造成的伪失败，同时让许可证清单排除第一方 `sigmacoder`。状态：等待人工批准；在批准前暂停后续 RED 运行与产品实现，r3 已被本版取代。
