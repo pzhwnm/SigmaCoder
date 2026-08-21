@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -54,6 +55,7 @@ COMMON_LAYER_NAMES = (
     "random-order-1",
     "random-order-2",
     "random-order-3",
+    "stability",
     "real-execution",
     "secret-scan",
     "supply-chain",
@@ -79,6 +81,7 @@ STALE_PATHS = (
     "mutants",
     ".pytest_cache",
 )
+STALE_GLOBS = (".coverage.*",)
 
 
 def _layer(
@@ -97,7 +100,25 @@ def build_manifest(profile: str) -> tuple[Layer, ...]:
         raise GauntletError(f"未知 Gauntlet profile：{profile}")
     layers = [
         _layer("toolchain", ("uv", "run", "--frozen", "python", "tools/check_toolchain.py")),
-        _layer("gauntlet-meta-tests", ("uv", "run", "--frozen", "pytest", "-q", "tests/gauntlet")),
+        _layer(
+            "gauntlet-meta-tests",
+            (
+                "uv",
+                "run",
+                "--frozen",
+                "pytest",
+                "-q",
+                "tests/unit/test_gauntlet_check_coverage.py",
+                "tests/unit/test_gauntlet_check_licenses.py",
+                "tests/unit/test_gauntlet_checkers.py",
+                "tests/unit/test_gauntlet_negative_controls.py",
+                "tests/unit/test_gauntlet_runner.py",
+                "tests/unit/test_mutation_profile.py",
+                "tests/unit/test_source_state.py",
+                "tests/unit/test_stability_runner.py",
+                "tests/unit/test_workflow_contract.py",
+            ),
+        ),
         _layer("tests", ("uv", "run", "--frozen", "pytest", "-q")),
         _layer("types", ("uv", "run", "--frozen", "mypy", "--strict", "src/sigmacoder")),
         _layer("lint", ("uv", "run", "--frozen", "ruff", "check", ".")),
@@ -154,6 +175,11 @@ def build_manifest(profile: str) -> tuple[Layer, ...]:
         _layer(
             "random-order-3",
             ("uv", "run", "--frozen", "pytest", "-q", "--randomly-seed=20260823"),
+        ),
+        _layer(
+            "stability",
+            ("uv", "run", "--frozen", "python", "tools/run_stability.py"),
+            timeout=1200,
         ),
         _layer("real-execution", ("uv", "run", "--frozen", "pytest", "-q", "tests/e2e")),
         _layer(
@@ -278,6 +304,23 @@ def cleanup_paths(repo: Path, paths: Sequence[str]) -> None:
             candidate.unlink()
 
 
+def cleanup_globs(repo: Path, patterns: Sequence[str]) -> None:
+    """清除仓库根内固定模式命中的陈旧并行报告。"""
+
+    resolved_repo = repo.resolve()
+    for pattern in patterns:
+        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+            raise GauntletError(f"清理模式逃逸仓库：{pattern}")
+        for candidate in resolved_repo.glob(pattern):
+            safe_candidate = _safe_repo_path(
+                resolved_repo, candidate.relative_to(resolved_repo).as_posix()
+            )
+            if safe_candidate.is_symlink() or safe_candidate.is_file():
+                safe_candidate.unlink()
+            elif safe_candidate.is_dir():
+                shutil.rmtree(safe_candidate)
+
+
 def _execute(
     command: Sequence[str],
     *,
@@ -285,6 +328,9 @@ def _execute(
     timeout: int,
     runner: CommandRunner,
 ) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
     try:
         return runner(
             list(command),
@@ -293,6 +339,7 @@ def _execute(
             text=True,
             encoding="utf-8",
             errors="strict",
+            env=environment,
             timeout=timeout,
             check=False,
         )
@@ -352,6 +399,7 @@ def run_gauntlet(
         validate_platform(profile)
     layers = build_manifest(profile)
     cleanup_paths(repo, STALE_PATHS)
+    cleanup_globs(repo, STALE_GLOBS)
     results: list[LayerResult] = []
     for layer in layers:
         print(f"\n=== Gauntlet 层：{layer.name} ===")

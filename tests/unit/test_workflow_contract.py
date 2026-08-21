@@ -1,0 +1,49 @@
+"""GitHub Actions 双平台 Tier 3 工作流的固定契约。"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = PROJECT_ROOT / ".github/workflows/gauntlet.yml"
+
+
+def workflow_text() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_workflow_只声明两个固定平台_job() -> None:
+    text = workflow_text()
+    jobs_section = text.split("\njobs:\n", maxsplit=1)[1]
+    job_ids = re.findall(r"^  ([a-z0-9-]+):\s*$", jobs_section, flags=re.MULTILINE)
+
+    assert job_ids == ["ubuntu-tier3", "windows-compat"]
+    assert text.count("runs-on: ubuntu-24.04") == 1
+    assert text.count("runs-on: windows-2025") == 1
+
+
+def test_workflow_分别执行精确_profile() -> None:
+    text = workflow_text()
+
+    assert text.count("uv run --frozen python tools/gauntlet.py --profile ubuntu-tier3") == 1
+    assert text.count("uv run --frozen python tools/gauntlet.py --profile windows-compat") == 1
+
+
+def test_workflow_精确固定_python_与_uv() -> None:
+    text = workflow_text()
+
+    assert (PROJECT_ROOT / ".python-version").read_text(encoding="utf-8") == "3.12.14\n"
+    assert text.count("uses: astral-sh/setup-uv@v6") == 2
+    assert text.count("version: 0.12.5") == 2
+    assert text.count("uses: actions/setup-python@v5") == 2
+    assert text.count("python-version-file: .python-version") == 2
+    assert text.count("run: uv sync --frozen") == 2
+
+
+def test_workflow_完整检出历史并保持最小权限() -> None:
+    text = workflow_text()
+
+    assert text.count("uses: actions/checkout@v4") == 2
+    assert text.count("fetch-depth: 0") == 2
+    assert "permissions:\n  contents: read\n" in text

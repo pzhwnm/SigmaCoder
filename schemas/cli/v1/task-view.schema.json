@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigmacoder.dev/schemas/cli/v1/task-view.schema.json",
+  "title": "SigmaCoder TaskViewV1",
+  "description": "经事件语义与当前工作区证据验证的持久 Task 视图。",
+  "$defs": {
+    "uuidV4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "objectId": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "eventHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "commonTask": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "objective",
+        "lifecycle_state",
+        "health",
+        "baseline",
+        "workspace",
+        "preparation",
+        "event_position",
+        "checkpoint",
+        "runtime"
+      ],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/uuidV4" },
+        "objective": { "type": "string", "minLength": 1 },
+        "lifecycle_state": {
+          "enum": ["PREPARING", "NEEDS_ATTENTION"]
+        },
+        "health": {
+          "enum": ["HEALTHY", "NEEDS_ATTENTION"]
+        },
+        "baseline": {
+          "type": "object",
+          "required": [
+            "repository_realpath",
+            "git_common_dir_realpath",
+            "object_format",
+            "commit_oid",
+            "source_dirty",
+            "dirty_content_included"
+          ],
+          "properties": {
+            "repository_realpath": { "type": "string", "minLength": 1 },
+            "git_common_dir_realpath": { "type": "string", "minLength": 1 },
+            "object_format": { "enum": ["sha1", "sha256"] },
+            "commit_oid": { "$ref": "#/$defs/objectId" },
+            "source_dirty": { "type": "boolean" },
+            "dirty_content_included": { "const": false }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "object_format": { "const": "sha1" } },
+                "required": ["object_format"]
+              },
+              "then": {
+                "properties": {
+                  "commit_oid": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": { "object_format": { "const": "sha256" } },
+                "required": ["object_format"]
+              },
+              "then": {
+                "properties": {
+                  "commit_oid": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "workspace": {
+          "type": "object",
+          "required": ["kind", "mode", "path", "head_oid", "availability"],
+          "properties": {
+            "kind": { "const": "git_linked_worktree" },
+            "mode": { "const": "DETACHED" },
+            "path": { "type": "string", "minLength": 1 },
+            "head_oid": {
+              "oneOf": [
+                { "$ref": "#/$defs/objectId" },
+                { "type": "null" }
+              ]
+            },
+            "availability": {
+              "enum": [
+                "AVAILABLE",
+                "NOT_CREATED",
+                "UNVERIFIED",
+                "MISSING",
+                "BASELINE_MISMATCH"
+              ]
+            }
+          }
+        },
+        "preparation": {
+          "type": "object",
+          "required": ["workspace", "event_store", "sandbox", "agent_run"],
+          "properties": {
+            "workspace": { "enum": ["READY", "FAILED", "RECOVERY_REQUIRED"] },
+            "event_store": { "const": "READY" },
+            "sandbox": { "const": "NOT_REQUIRED_FOR_READ_ONLY_ANALYSIS" },
+            "agent_run": { "const": "NOT_STARTED" }
+          }
+        },
+        "event_position": {
+          "type": "object",
+          "required": ["sequence", "event_hash"],
+          "properties": {
+            "sequence": { "type": "integer", "minimum": 1 },
+            "event_hash": { "$ref": "#/$defs/eventHash" }
+          }
+        },
+        "checkpoint": {
+          "type": "object",
+          "required": ["through_sequence", "through_event_hash", "load_mode"],
+          "properties": {
+            "through_sequence": { "type": "integer", "minimum": 1 },
+            "through_event_hash": { "$ref": "#/$defs/eventHash" },
+            "load_mode": { "enum": ["CREATED", "CHECKPOINT", "FULL_REPLAY"] }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "required": [
+            "process_restored",
+            "terminal_restored",
+            "memory_restored",
+            "network_transaction_restored"
+          ],
+          "properties": {
+            "process_restored": { "const": false },
+            "terminal_restored": { "const": false },
+            "memory_restored": { "const": false },
+            "network_transaction_restored": { "const": false }
+          }
+        }
+      }
+    },
+    "successfulPreparedVariant": {
+      "type": "object",
+      "properties": {
+        "lifecycle_state": { "const": "PREPARING" },
+        "health": { "const": "HEALTHY" },
+        "workspace": {
+          "properties": {
+            "availability": { "const": "AVAILABLE" },
+            "head_oid": { "$ref": "#/$defs/objectId" }
+          }
+        },
+        "preparation": {
+          "properties": {
+            "workspace": { "const": "READY" },
+            "sandbox": { "const": "NOT_REQUIRED_FOR_READ_ONLY_ANALYSIS" }
+          }
+        }
+      }
+    },
+    "definitelyNotCreatedVariant": {
+      "type": "object",
+      "properties": {
+        "lifecycle_state": { "const": "NEEDS_ATTENTION" },
+        "health": { "const": "NEEDS_ATTENTION" },
+        "workspace": {
+          "properties": {
+            "availability": { "const": "NOT_CREATED" },
+            "head_oid": { "type": "null" }
+          }
+        },
+        "preparation": {
+          "properties": { "workspace": { "const": "FAILED" } }
+        }
+      }
+    },
+    "unverifiedRecoveryVariant": {
+      "type": "object",
+      "properties": {
+        "lifecycle_state": { "const": "NEEDS_ATTENTION" },
+        "health": { "const": "NEEDS_ATTENTION" },
+        "workspace": {
+          "properties": {
+            "availability": { "const": "UNVERIFIED" }
+          }
+        },
+        "preparation": {
+          "properties": { "workspace": { "const": "RECOVERY_REQUIRED" } }
+        }
+      }
+    },
+    "missingPreparedVariant": {
+      "type": "object",
+      "properties": {
+        "lifecycle_state": { "const": "NEEDS_ATTENTION" },
+        "health": { "const": "NEEDS_ATTENTION" },
+        "workspace": {
+          "properties": {
+            "availability": { "const": "MISSING" },
+            "head_oid": { "type": "null" }
+          }
+        },
+        "preparation": {
+          "properties": { "workspace": { "const": "READY" } }
+        }
+      }
+    },
+    "baselineMismatchPreparedVariant": {
+      "type": "object",
+      "properties": {
+        "lifecycle_state": { "const": "NEEDS_ATTENTION" },
+        "health": { "const": "NEEDS_ATTENTION" },
+        "workspace": {
+          "properties": {
+            "availability": { "const": "BASELINE_MISMATCH" },
+            "head_oid": { "$ref": "#/$defs/objectId" }
+          }
+        },
+        "preparation": {
+          "properties": { "workspace": { "const": "READY" } }
+        }
+      }
+    }
+  },
+  "allOf": [
+    { "$ref": "#/$defs/commonTask" },
+    {
+      "oneOf": [
+        { "$ref": "#/$defs/successfulPreparedVariant" },
+        { "$ref": "#/$defs/definitelyNotCreatedVariant" },
+        { "$ref": "#/$defs/unverifiedRecoveryVariant" },
+        { "$ref": "#/$defs/missingPreparedVariant" },
+        { "$ref": "#/$defs/baselineMismatchPreparedVariant" }
+      ]
+    }
+  ]
+}

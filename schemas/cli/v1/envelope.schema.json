@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigmacoder.dev/schemas/cli/v1/envelope.schema.json",
+  "title": "SigmaCoder CLI Envelope V1",
+  "description": "task.start、task.list 与 task.status 的版本化机器接口外壳。",
+  "type": "object",
+  "required": ["schema_version", "command", "ok", "data", "error"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "command": { "enum": ["task.start", "task.list", "task.status"] },
+    "ok": { "type": "boolean" },
+    "data": {},
+    "error": {
+      "oneOf": [
+        { "$ref": "error.schema.json" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "ok": { "const": true } },
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": { "error": { "type": "null" } },
+        "oneOf": [
+          {
+            "properties": {
+              "command": { "const": "task.start" },
+              "data": { "$ref": "#/$defs/taskData" }
+            }
+          },
+          {
+            "properties": {
+              "command": { "const": "task.status" },
+              "data": { "$ref": "#/$defs/taskData" }
+            }
+          },
+          {
+            "properties": {
+              "command": { "const": "task.list" },
+              "data": { "$ref": "task-list.schema.json" }
+            }
+          }
+        ]
+      },
+      "else": {
+        "properties": { "error": { "$ref": "error.schema.json" } },
+        "oneOf": [
+          { "$ref": "#/$defs/ordinaryFailure" },
+          {
+            "$ref": "#/$defs/partialListFailure"
+          },
+          {
+            "$ref": "#/$defs/workspaceUnavailableFailure"
+          },
+          {
+            "$ref": "#/$defs/workspaceMismatchFailure"
+          },
+          {
+            "$ref": "#/$defs/preparationFailedFailure"
+          },
+          {
+            "$ref": "#/$defs/recoveryRequiredFailure"
+          }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "taskData": {
+      "type": "object",
+      "required": ["task"],
+      "properties": {
+        "task": { "$ref": "task-view.schema.json" }
+      }
+    },
+    "ordinaryFailure": {
+      "properties": {
+        "data": { "type": "null" },
+        "error": {
+          "allOf": [
+            { "$ref": "error.schema.json" },
+            {
+              "properties": {
+                "code": {
+                  "not": {
+                    "enum": [
+                      "PARTIAL_INTEGRITY_FAILURE",
+                      "WORKSPACE_UNAVAILABLE",
+                      "WORKSPACE_BASELINE_MISMATCH",
+                      "TASK_PREPARATION_FAILED",
+                      "CREATION_RECOVERY_REQUIRED"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "partialListFailure": {
+      "properties": {
+        "command": { "const": "task.list" },
+        "data": { "$ref": "task-list.schema.json" },
+        "error": {
+          "allOf": [
+            { "$ref": "error.schema.json" },
+            { "properties": { "code": { "const": "PARTIAL_INTEGRITY_FAILURE" } } }
+          ]
+        }
+      }
+    },
+    "workspaceUnavailableFailure": {
+      "$ref": "#/$defs/taskFailureBase",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/missingTaskData"
+        },
+        "error": {
+          "allOf": [
+            { "$ref": "error.schema.json" },
+            { "properties": { "code": { "const": "WORKSPACE_UNAVAILABLE" } } }
+          ]
+        }
+      }
+    },
+    "workspaceMismatchFailure": {
+      "$ref": "#/$defs/taskFailureBase",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/mismatchedTaskData"
+        },
+        "error": {
+          "allOf": [
+            { "$ref": "error.schema.json" },
+            { "properties": { "code": { "const": "WORKSPACE_BASELINE_MISMATCH" } } }
+          ]
+        }
+      }
+    },
+    "preparationFailedFailure": {
+      "$ref": "#/$defs/taskFailureBase",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/notCreatedTaskData"
+        },
+        "error": {
+          "allOf": [
+            { "$ref": "error.schema.json" },
+            { "properties": { "code": { "const": "TASK_PREPARATION_FAILED" } } }
+          ]
+        }
+      }
+    },
+    "recoveryRequiredFailure": {
+      "$ref": "#/$defs/taskFailureBase",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/unverifiedTaskData"
+        },
+        "error": {
+          "allOf": [
+            { "$ref": "error.schema.json" },
+            { "properties": { "code": { "const": "CREATION_RECOVERY_REQUIRED" } } }
+          ]
+        }
+      }
+    },
+    "taskFailureBase": {
+      "properties": {
+        "command": { "enum": ["task.start", "task.status"] }
+      }
+    },
+    "notCreatedTaskData": {
+      "type": "object",
+      "required": ["task"],
+      "properties": {
+        "task": {
+          "allOf": [
+            { "$ref": "task-view.schema.json" },
+            { "$ref": "task-view.schema.json#/$defs/definitelyNotCreatedVariant" }
+          ]
+        }
+      }
+    },
+    "unverifiedTaskData": {
+      "type": "object",
+      "required": ["task"],
+      "properties": {
+        "task": {
+          "allOf": [
+            { "$ref": "task-view.schema.json" },
+            { "$ref": "task-view.schema.json#/$defs/unverifiedRecoveryVariant" }
+          ]
+        }
+      }
+    },
+    "missingTaskData": {
+      "type": "object",
+      "required": ["task"],
+      "properties": {
+        "task": {
+          "allOf": [
+            { "$ref": "task-view.schema.json" },
+            { "$ref": "task-view.schema.json#/$defs/missingPreparedVariant" }
+          ]
+        }
+      }
+    },
+    "mismatchedTaskData": {
+      "type": "object",
+      "required": ["task"],
+      "properties": {
+        "task": {
+          "allOf": [
+            { "$ref": "task-view.schema.json" },
+            { "$ref": "task-view.schema.json#/$defs/baselineMismatchPreparedVariant" }
+          ]
+        }
+      }
+    }
+  }
+}

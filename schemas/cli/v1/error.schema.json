@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigmacoder.dev/schemas/cli/v1/error.schema.json",
+  "title": "SigmaCoder CLI Error V1",
+  "description": "CLI 机器接口的稳定错误对象。",
+  "type": "object",
+  "required": ["code", "message", "details"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "INVALID_ARGUMENT",
+        "INVALID_GIT_REPOSITORY",
+        "UNBORN_REPOSITORY",
+        "INVALID_BASELINE",
+        "DIRTY_SOURCE_REQUIRES_ACK",
+        "UNSAFE_GIT_CHECKOUT_CONFIG",
+        "PATH_OUTSIDE_ALLOWED_ROOT",
+        "TASK_NOT_FOUND",
+        "WORKSPACE_UNAVAILABLE",
+        "WORKSPACE_BASELINE_MISMATCH",
+        "EVENT_ID_DUPLICATE",
+        "EVENT_SEQUENCE_GAP",
+        "EVENT_SEQUENCE_DUPLICATE",
+        "EVENT_PREVIOUS_HASH_MISMATCH",
+        "EVENT_HASH_MISMATCH",
+        "EVENT_PAYLOAD_INVALID",
+        "EVENT_CAUSATION_INVALID",
+        "EVENT_TRANSITION_INVALID",
+        "UNSUPPORTED_EVENT_SCHEMA",
+        "SQLITE_CORRUPT",
+        "PARTIAL_INTEGRITY_FAILURE",
+        "TASK_CREATION_FAILED",
+        "TASK_PREPARATION_FAILED",
+        "WORKSPACE_CREATE_FAILED",
+        "STORE_UNAVAILABLE",
+        "TASK_ID_COLLISION",
+        "CREATION_RECOVERY_REQUIRED",
+        "STORE_BUSY",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "details": {
+      "type": "object"
+    }
+  }
+}

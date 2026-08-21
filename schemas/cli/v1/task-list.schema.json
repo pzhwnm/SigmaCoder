@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigmacoder.dev/schemas/cli/v1/task-list.schema.json",
+  "title": "SigmaCoder Task List V1",
+  "description": "逐 Task 校验后的可信列表与最小损坏定位。",
+  "type": "object",
+  "required": ["items", "invalid_items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": { "$ref": "task-view.schema.json" }
+    },
+    "invalid_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "error_code", "first_invalid_sequence"],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "error_code": {
+            "enum": [
+              "EVENT_ID_DUPLICATE",
+              "EVENT_SEQUENCE_GAP",
+              "EVENT_SEQUENCE_DUPLICATE",
+              "EVENT_PREVIOUS_HASH_MISMATCH",
+              "EVENT_HASH_MISMATCH",
+              "EVENT_PAYLOAD_INVALID",
+              "EVENT_CAUSATION_INVALID",
+              "EVENT_TRANSITION_INVALID",
+              "UNSUPPORTED_EVENT_SCHEMA",
+              "SQLITE_CORRUPT"
+            ]
+          },
+          "first_invalid_sequence": {
+            "oneOf": [
+              { "type": "integer", "minimum": 1 },
+              { "type": "null" }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

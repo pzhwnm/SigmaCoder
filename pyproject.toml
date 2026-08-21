@@ -45,6 +45,7 @@ xfail_strict = true
 branch = true
 relative_files = true
 source = ["sigmacoder"]
+patch = ["subprocess"]
 
 [tool.coverage.report]
 show_missing = true

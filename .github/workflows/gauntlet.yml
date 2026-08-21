@@ -1,0 +1,84 @@
+name: T01 Tier 3 Gauntlet
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: t01-gauntlet-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu-tier3:
+    name: Ubuntu Tier 3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: 检出完整历史
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 建立本地 main 比较引用
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet refs/heads/main || git branch main origin/main
+
+      - name: 安装精确 uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.12.5
+          enable-cache: false
+
+      - name: 安装精确 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: 同步锁定依赖
+        run: uv sync --frozen
+
+      - name: 运行 Ubuntu Tier 3 总门
+        run: uv run --frozen python tools/gauntlet.py --profile ubuntu-tier3
+
+  windows-compat:
+    name: Windows compatibility
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: 检出完整历史
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 建立本地 main 比较引用
+        shell: pwsh
+        run: |
+          git show-ref --verify --quiet refs/heads/main
+          if ($LASTEXITCODE -ne 0) {
+            git branch main origin/main
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: 安装精确 uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.12.5
+          enable-cache: false
+
+      - name: 安装精确 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: 同步锁定依赖
+        run: uv sync --frozen
+
+      - name: 运行 Windows compatibility 总门
+        run: uv run --frozen python tools/gauntlet.py --profile windows-compat
