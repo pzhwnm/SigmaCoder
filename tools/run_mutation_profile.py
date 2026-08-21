@@ -128,8 +128,10 @@ def parse_mutmut_results(output: str) -> dict[str, str]:
     results: dict[str, str] = {}
     for raw_line in output.splitlines():
         line = raw_line.strip()
-        if ": " not in line:
+        if not line:
             continue
+        if ": " not in line:
+            raise MutationGateError(f"mutmut 返回无法解析的非空结果行：{line}")
         name, status = line.rsplit(": ", 1)
         if status not in KNOWN_STATUSES:
             raise MutationGateError(f"mutmut 返回未知状态：{status}")
@@ -197,7 +199,15 @@ def _run_once(
     setup_cfg = _write_setup_cfg(repo, profile, tests)
     try:
         run_result = _run_command(
-            ["uv", "run", "mutmut", "run", "--max-children", str(profile.max_children)],
+            [
+                "uv",
+                "run",
+                "--frozen",
+                "mutmut",
+                "run",
+                "--max-children",
+                str(profile.max_children),
+            ],
             repo=repo,
             timeout=profile.timeout_seconds,
             runner=runner,
@@ -207,7 +217,7 @@ def _run_once(
                 f"mutmut run 退出码为 {run_result.returncode}：{run_result.stderr.strip()}"
             )
         result = _run_command(
-            ["uv", "run", "mutmut", "results", "--all", "true"],
+            ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
             repo=repo,
             timeout=120,
             runner=runner,

@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 from tools.run_mutation_profile import (
+    KNOWN_STATUSES,
     MutationGateError,
     load_profile,
     parse_mutmut_results,
@@ -62,6 +63,26 @@ def test_mutmut_results_只接受非空且全部_killed() -> None:
         parse_mutmut_results("    a__mutmut_1: magical\n")
 
 
+@pytest.mark.parametrize("status", sorted(KNOWN_STATUSES - {"killed"}))
+def test_mutmut_results_拒绝每一种非_killed_状态(status: str) -> None:
+    output = f"    killed__mutmut_1: killed\n    failed__mutmut_2: {status}\n"
+
+    with pytest.raises(MutationGateError, match="未被测试杀死"):
+        parse_mutmut_results(output)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "unexpected\n    a__mutmut_1: killed\n",
+        "    a__mutmut_1: killed\nmalformed",
+    ],
+)
+def test_mutmut_results_拒绝任何非空畸形行(output: str) -> None:
+    with pytest.raises(MutationGateError, match="无法解析"):
+        parse_mutmut_results(output)
+
+
 def test_profile_拒绝逃逸缓存路径(tmp_path: Path) -> None:
     config = write_profile(tmp_path, cache_dir="../outside")
     with pytest.raises(MutationGateError, match="逃逸"):
@@ -84,9 +105,9 @@ def test_profile_连续两次全量并追加_property_only(tmp_path: Path) -> No
     assert [item["kind"] for item in runs] == ["full", "full", "property-only"]
     assert len(calls) == 6
     assert [command for command in calls if "results" in command] == [
-        ["uv", "run", "mutmut", "results", "--all", "true"],
-        ["uv", "run", "mutmut", "results", "--all", "true"],
-        ["uv", "run", "mutmut", "results", "--all", "true"],
+        ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
+        ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
+        ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
     ]
     assert not (tmp_path / "setup.cfg").exists()
     assert (tmp_path / "mutants/reports/events.json").is_file()
@@ -100,6 +121,20 @@ def test_profile_命令失败时仍清理临时配置(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(command, 7, "", "boom")
 
     with pytest.raises(MutationGateError, match="退出码为 7"):
+        run_profile(tmp_path, profile, runner=runner, require_posix=False)
+    assert not (tmp_path / "setup.cfg").exists()
+
+
+def test_profile_results_命令失败时仍清理临时配置(tmp_path: Path) -> None:
+    create_inputs(tmp_path)
+    profile = load_profile(write_profile(tmp_path), "events")
+
+    def runner(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "results" in command:
+            return subprocess.CompletedProcess(command, 2, "", "bad option")
+        return subprocess.CompletedProcess(command, 0, "run ok\n", "")
+
+    with pytest.raises(MutationGateError, match="mutmut results 退出码为 2"):
         run_profile(tmp_path, profile, runner=runner, require_posix=False)
     assert not (tmp_path / "setup.cfg").exists()
 
