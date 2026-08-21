@@ -137,7 +137,7 @@ def test_real_worktree_observation_is_fail_closed(tmp_path: Path) -> None:
     repo = _repository(tmp_path)
     adapter = GitWorkspaceAdapter(tmp_path / "control" / "hooks")
     inspection = adapter.inspect_repository(repo.path, repo.first_commit)
-    nonce = "0123456789abcdef0123456789abcdef"
+    nonce = "".join(("01234567", "89abcdef")) * 2
     relative = f"tasks/task/{workspace_slot_name(nonce)}"
     digest = "a" * 64
     workspace = adapter.create_detached_worktree(

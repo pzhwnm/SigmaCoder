@@ -17,7 +17,7 @@ import sigmacoder.adapters.git_workspace as git_module
 from sigmacoder.adapters.git_workspace import GitWorkspaceAdapter, GitWorkspaceError
 from sigmacoder.ports.workspace import RepositoryInspection
 
-NONCE = "0123456789abcdef0123456789abcdef"
+NONCE = "".join(("01234567", "89abcdef")) * 2
 DIGEST = "a" * 64
 
 

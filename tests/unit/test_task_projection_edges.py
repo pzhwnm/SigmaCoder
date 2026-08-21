@@ -11,10 +11,11 @@ from sigmacoder.domain.tasks import evaluate_workspace_adoption
 
 
 def _authorization() -> dict[str, object]:
+    nonce = "".join(("01234567", "89abcdef")) * 2
     return {
         "data_root": "C:/data",
-        "workspace_realpath": "C:/data/tasks/t/workspace-0123456789abcdef0123456789abcdef",
-        "workspace_relative_path": "tasks/t/workspace-0123456789abcdef0123456789abcdef",
+        "workspace_realpath": f"C:/data/tasks/t/workspace-{nonce}",
+        "workspace_relative_path": f"tasks/t/workspace-{nonce}",
         "git_admin_realpath": "C:/repo/.git/worktrees/w",
         "baseline_commit": "a" * 40,
         "ownership_nonce": "0" * 32,

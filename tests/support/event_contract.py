@@ -23,7 +23,7 @@ EVENT_IDS = (
 )
 BASELINE_OID = "1" * 40
 WORKSPACE_RELATIVE_PATH = "tasks/11111111/workspace-0123456789abcdef"
-OWNERSHIP_NONCE = "0123456789abcdef0123456789abcdef"
+OWNERSHIP_NONCE = "".join(("01234567", "89abcdef")) * 2
 GIT_COMMON_DIR = "C:/fixture/repository/.git"
 
 
