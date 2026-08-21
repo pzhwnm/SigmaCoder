@@ -80,6 +80,30 @@ def test_reparse_detection_short_circuits_on_junction(
     assert git_module._is_reparse(path) is True
 
 
+def test_reparse_detection_reads_optional_windows_attributes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "ordinary"
+    path.write_text("fixture", encoding="utf-8")
+    marker = 0x400
+    monkeypatch.setattr(Path, "is_symlink", lambda _path: False)
+    monkeypatch.setattr(git_module, "_is_junction", lambda _path: False)
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda _path: SimpleNamespace(st_file_attributes=marker),
+    )
+    monkeypatch.setattr(
+        git_module.stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        marker,
+        raising=False,
+    )
+
+    assert git_module._is_reparse(path) is True
+
+
 class _ChangingFile:
     def __init__(self) -> None:
         self.calls = 0
