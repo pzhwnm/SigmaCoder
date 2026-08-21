@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "events": {
+      "source_paths": ["src/sigmacoder"],
+      "only_mutate": ["src/sigmacoder/domain/events.py"],
+      "test_selection": ["tests/domain", "tests/property"],
+      "property_test_selection": ["tests/property"],
+      "timeout_seconds": 1800,
+      "timeout_multiplier": 15.0,
+      "timeout_constant": 1.0,
+      "max_children": 4,
+      "repeat": 2,
+      "cache_dir": "mutants",
+      "report_path": "mutants/reports/events.json"
+    },
+    "task-service": {
+      "source_paths": ["src/sigmacoder"],
+      "only_mutate": ["src/sigmacoder/application/task_service.py"],
+      "test_selection": ["tests/domain", "tests/integration", "tests/e2e"],
+      "property_test_selection": [],
+      "timeout_seconds": 1800,
+      "timeout_multiplier": 15.0,
+      "timeout_constant": 1.0,
+      "max_children": 4,
+      "repeat": 2,
+      "cache_dir": "mutants",
+      "report_path": "mutants/reports/task-service.json"
+    }
+  }
+}

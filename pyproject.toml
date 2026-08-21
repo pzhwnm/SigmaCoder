@@ -38,7 +38,7 @@ packages = ["src/sigmacoder"]
 minversion = "8.0"
 addopts = ["--strict-config", "--strict-markers"]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 xfail_strict = true
 
 [tool.coverage.run]
