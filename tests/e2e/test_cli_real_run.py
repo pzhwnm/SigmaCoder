@@ -177,7 +177,7 @@ def run_cli(
     """在全新 OS 进程执行 CLI，并同时验证退出码与公开 Schema。"""
 
     result = subprocess.run(
-        [sys.executable, "-m", "sigmacoder.cli", *arguments],
+        [sys.executable, "-m", "sigmacoder", *arguments],
         check=False,
         capture_output=True,
         text=True,
