@@ -207,7 +207,7 @@ def _run_once(
                 f"mutmut run 退出码为 {run_result.returncode}：{run_result.stderr.strip()}"
             )
         result = _run_command(
-            ["uv", "run", "mutmut", "results", "--all"],
+            ["uv", "run", "mutmut", "results", "--all", "true"],
             repo=repo,
             timeout=120,
             runner=runner,

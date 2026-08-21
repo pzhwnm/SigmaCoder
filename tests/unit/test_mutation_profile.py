@@ -83,6 +83,11 @@ def test_profile_连续两次全量并追加_property_only(tmp_path: Path) -> No
     runs = cast(list[dict[str, object]], report["runs"])
     assert [item["kind"] for item in runs] == ["full", "full", "property-only"]
     assert len(calls) == 6
+    assert [command for command in calls if "results" in command] == [
+        ["uv", "run", "mutmut", "results", "--all", "true"],
+        ["uv", "run", "mutmut", "results", "--all", "true"],
+        ["uv", "run", "mutmut", "results", "--all", "true"],
+    ]
     assert not (tmp_path / "setup.cfg").exists()
     assert (tmp_path / "mutants/reports/events.json").is_file()
 
