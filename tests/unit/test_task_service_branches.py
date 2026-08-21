@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import cast
 
 import pytest
@@ -410,8 +410,8 @@ def test_adoption_authorization_falls_back_to_common_worktrees_directory(
         observation,
     )
 
-    assert authorization["git_admin_realpath"] == str(
-        Path(GIT_COMMON_DIR).resolve(strict=False) / "worktrees"
+    assert PureWindowsPath(cast(str, authorization["git_admin_realpath"])) == (
+        PureWindowsPath(GIT_COMMON_DIR) / "worktrees"
     )
 
 
