@@ -14,6 +14,7 @@ from tests.support.event_contract import (
     TASK_ID,
     WORKSPACE_RELATIVE_PATH,
     EventsApi,
+    append_event,
     as_mapping,
     assert_validation_error,
     authorization_events,
@@ -22,8 +23,6 @@ from tests.support.event_contract import (
     field,
     rehash_chain,
 )
-
-from sigmacoder.domain import events as event_domain
 
 PREPARED_EVENT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4"
 ATTENTION_EVENT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5"
@@ -128,11 +127,12 @@ def _rehash_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
     return checkpoint
 
 
-def test_single_created_event_is_a_valid_rebuild_prefix() -> None:
-    result = EventsApi().restore_task_projection(authorization_events()[:1])
-
-    assert field(result, "through_sequence") == 1
-    assert field(field(result, "projection"), "lifecycle_state") == "CREATED"
+@pytest.mark.parametrize("event_count", [1, 2])
+def test_incomplete_initial_authorization_transaction_is_rejected(event_count: int) -> None:
+    assert_validation_error(
+        lambda: EventsApi().restore_task_projection(authorization_events()[:event_count]),
+        "EVENT_TRANSITION_INVALID",
+    )
 
 
 def test_prepared_terminal_event_builds_available_workspace_projection() -> None:
@@ -174,12 +174,11 @@ def test_failure_and_attention_events_build_fail_closed_projection(
     assert failure["reason"] == reason
 
 
-def test_failure_without_attention_is_a_valid_terminal_prefix() -> None:
-    result = EventsApi().restore_task_projection(_failure_events(include_attention=False))
-    projection = as_mapping(field(result, "projection"))
-
-    assert projection["lifecycle_state"] == "PREPARING"
-    assert projection["health"] == "NEEDS_ATTENTION"
+def test_failure_without_attention_is_rejected_as_incomplete_durable_transaction() -> None:
+    assert_validation_error(
+        lambda: EventsApi().restore_task_projection(_failure_events(include_attention=False)),
+        "EVENT_TRANSITION_INVALID",
+    )
 
 
 @pytest.mark.parametrize(
@@ -250,17 +249,18 @@ def test_first_event_cannot_claim_a_cause() -> None:
     )
 
 
-def test_attention_reducer_is_defensive_when_failure_projection_is_absent() -> None:
-    """覆盖 reducer 的防御分支；语义校验仍会拒绝孤立 Attention。"""
+def test_attention_without_failure_is_rejected_before_reducer() -> None:
+    events = append_event(
+        authorization_events(),
+        "TaskAttentionRequiredV1",
+        {"reason": "WORKSPACE_PROVISIONING_FAILED"},
+        event_id=ATTENTION_EVENT_ID,
+    )
 
-    created = authorization_events()[0]
-    projection = event_domain._initial_projection(created)
-    attention = _failure_events()[-1]
-
-    event_domain._apply_event(projection, attention)
-
-    assert projection["failure"] is None
-    assert projection["lifecycle_state"] == "NEEDS_ATTENTION"
+    assert_validation_error(
+        lambda: EventsApi().restore_task_projection(events),
+        "EVENT_TRANSITION_INVALID",
+    )
 
 
 @pytest.mark.parametrize(

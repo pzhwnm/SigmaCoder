@@ -385,8 +385,33 @@ def test_non_unique_indexes_are_ignored_when_required_unique_indexes_exist(tmp_p
         SQLiteEventStore._verify_unique_indexes(
             connection,
             "events",
-            {("task_id", "sequence"), ("event_id",)},
+            {("task_id", "sequence"): "pk", ("event_id",): "u"},
         )
+
+
+@pytest.mark.parametrize(
+    ("table", "statement"),
+    (
+        ("events", "CREATE UNIQUE INDEX injected_event_type ON events(event_type)"),
+        (
+            "task_registry",
+            "CREATE UNIQUE INDEX injected_task_id ON task_registry(task_id)",
+        ),
+    ),
+)
+def test_schema_verification_rejects_extra_unique_indexes(
+    tmp_path: Path,
+    table: str,
+    statement: str,
+) -> None:
+    store = _initialized_store(tmp_path / table)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(statement)
+
+    with pytest.raises(SigmaCoderError) as captured:
+        store.initialize()
+
+    _assert_code(captured, "SQLITE_CORRUPT")
 
 
 def test_store_accessors_and_missing_task_paths(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Final, NoReturn, cast
 
 from sigmacoder.domain.events import (
     DomainValidationError,
@@ -51,6 +51,16 @@ _EXPECTED_COLUMNS = {
         "through_event_hash",
         "checkpoint",
         "checkpoint_hash",
+    ),
+}
+_EXPECTED_EVENT_TRIGGER_SQL: Final = {
+    "events_reject_update": (
+        "CREATE TRIGGER EVENTS_REJECT_UPDATE BEFORE UPDATE ON EVENTS "
+        "BEGIN SELECT RAISE(ABORT, 'EVENTS_APPEND_ONLY'); END"
+    ),
+    "events_reject_delete": (
+        "CREATE TRIGGER EVENTS_REJECT_DELETE BEFORE DELETE ON EVENTS "
+        "BEGIN SELECT RAISE(ABORT, 'EVENTS_APPEND_ONLY'); END"
     ),
 }
 
@@ -255,9 +265,15 @@ class SQLiteEventStore:
             if actual != expected:
                 raise SigmaCoderError("SQLITE_CORRUPT", f"SQLite 表 {table} 结构不匹配。")
         cls._verify_unique_indexes(
-            connection, "task_registry", {("task_id",), ("workspace_relative_path",)}
+            connection,
+            "task_registry",
+            {("task_id",): "pk", ("workspace_relative_path",): "u"},
         )
-        cls._verify_unique_indexes(connection, "events", {("task_id", "sequence"), ("event_id",)})
+        cls._verify_unique_indexes(
+            connection,
+            "events",
+            {("task_id", "sequence"): "pk", ("event_id",): "u"},
+        )
         for table in ("events", "projections", "checkpoints"):
             foreign_keys = connection.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
             bindings = {
@@ -274,15 +290,8 @@ class SQLiteEventStore:
         trigger_sql = {
             str(row["name"]): " ".join(str(row["sql"]).upper().split()) for row in trigger_rows
         }
-        update_sql = trigger_sql.get("events_reject_update", "")
-        delete_sql = trigger_sql.get("events_reject_delete", "")
-        if (
-            "BEFORE UPDATE ON EVENTS" not in update_sql
-            or "EVENTS_APPEND_ONLY" not in update_sql
-            or "BEFORE DELETE ON EVENTS" not in delete_sql
-            or "EVENTS_APPEND_ONLY" not in delete_sql
-        ):
-            raise SigmaCoderError("SQLITE_CORRUPT", "events 只增触发器缺失。")
+        if trigger_sql != _EXPECTED_EVENT_TRIGGER_SQL:
+            raise SigmaCoderError("SQLITE_CORRUPT", "events 只增触发器定义不匹配。")
         events_sql_row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='events'"
         ).fetchone()
@@ -298,17 +307,23 @@ class SQLiteEventStore:
     def _verify_unique_indexes(
         connection: sqlite3.Connection,
         table: str,
-        required: set[tuple[str, ...]],
+        required: Mapping[tuple[str, ...], str],
     ) -> None:
-        found: set[tuple[str, ...]] = set()
+        found: list[tuple[tuple[str, ...], str]] = []
         for row in connection.execute(f'PRAGMA index_list("{table}")').fetchall():
             if int(row["unique"]) != 1:
                 continue
             name = str(row["name"]).replace('"', '""')
             columns = connection.execute(f'PRAGMA index_info("{name}")').fetchall()
-            found.add(tuple(str(column["name"]) for column in columns))
-        if not required.issubset(found):
-            raise SigmaCoderError("SQLITE_CORRUPT", f"SQLite 表 {table} 唯一约束缺失。")
+            found.append(
+                (
+                    tuple(str(column["name"]) for column in columns),
+                    str(row["origin"]),
+                )
+            )
+        expected = set(required.items())
+        if len(found) != len(expected) or set(found) != expected:
+            raise SigmaCoderError("SQLITE_CORRUPT", f"SQLite 表 {table} 唯一约束不匹配。")
 
     @staticmethod
     def _insert_event(connection: sqlite3.Connection, event: Mapping[str, object]) -> None:
@@ -391,7 +406,8 @@ class SQLiteEventStore:
         """在一个事务中耐久提交 Task、授权事件和派生数据。"""
 
         restored = _validated_write(task_id, (), events, projection, checkpoint)
-        event_types = tuple(str(event.get("event_type")) for event in events)
+        logical_events = sorted(events, key=lambda event: cast(int, event["sequence"]))
+        event_types = tuple(str(event.get("event_type")) for event in logical_events)
         expected_types = (
             "TaskCreatedV1",
             "TaskPreparationStartedV1",
@@ -458,9 +474,13 @@ class SQLiteEventStore:
                     raise SigmaCoderError("TASK_NOT_FOUND", "Task 不存在。")
                 existing = [self._event_from_row(row) for row in rows]
                 self._assert_event_ids_available(connection, events)
-                first_sequence = events[0].get("sequence") if events else None
-                if not isinstance(first_sequence, int) or isinstance(first_sequence, bool):
+                incoming_sequences = [event.get("sequence") for event in events]
+                if not incoming_sequences or any(
+                    not isinstance(sequence, int) or isinstance(sequence, bool)
+                    for sequence in incoming_sequences
+                ):
                     raise SigmaCoderError("EVENT_SEQUENCE_GAP", "追加事件缺少合法 sequence。")
+                first_sequence = min(cast(list[int], incoming_sequences))
                 expected_sequence = int(rows[-1]["sequence"]) + 1
                 if first_sequence < expected_sequence:
                     raise SigmaCoderError("STORE_BUSY", "Task 已由并发写者推进，请重新读取。")

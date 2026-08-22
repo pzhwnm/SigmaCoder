@@ -16,6 +16,8 @@ from tests.support.event_contract import (
     TASK_ID,
     WORKSPACE_RELATIVE_PATH,
     authorization_events,
+    failed_events,
+    rehash_chain,
 )
 
 from sigmacoder.application.task_service import (
@@ -474,6 +476,16 @@ def test_restore_retries_once_when_projection_cas_sees_new_tail(tmp_path: Path) 
     assert store.replace_calls == 2
 
 
+def test_restore_orders_reversed_port_rows_before_returning(tmp_path: Path) -> None:
+    service, store, _ = _service(tmp_path)
+    store.events = list(reversed(authorization_events()))
+
+    restored_events, restored = service._restore_task(TASK_ID)
+
+    assert [event["sequence"] for event in restored_events] == [1, 2, 3]
+    assert restored.through_sequence == 3
+
+
 @pytest.mark.parametrize("retry", [False, True])
 def test_restore_propagates_non_retryable_or_second_store_busy(
     tmp_path: Path,
@@ -497,7 +509,7 @@ def test_restore_propagates_non_retryable_or_second_store_busy(
 
 def test_restore_reports_first_gap_for_invalid_authoritative_events(tmp_path: Path) -> None:
     events = authorization_events()
-    events[1]["sequence"] = 3
+    events = [events[0], events[2]]
     service, store, _ = _service(tmp_path)
     store.events = events
 
@@ -509,9 +521,42 @@ def test_restore_reports_first_gap_for_invalid_authoritative_events(tmp_path: Pa
 
 
 def test_first_invalid_sequence_handles_non_integer_and_valid_chains() -> None:
+    assert TaskService._first_invalid_sequence([{"sequence": 0}]) == 1
     assert TaskService._first_invalid_sequence([{"sequence": 2}]) == 1
     assert TaskService._first_invalid_sequence([{"sequence": "not-an-int"}]) == 1
+    assert (
+        TaskService._first_invalid_sequence(
+            [{"sequence": 1}, {"sequence": 2}, {"sequence": "not-an-int"}]
+        )
+        == 3
+    )
+    assert (
+        TaskService._first_invalid_sequence(
+            [{"sequence": 1}, {"sequence": 3}, {"sequence": "not-an-int"}]
+        )
+        == 3
+    )
+    assert (
+        TaskService._first_invalid_sequence([{"sequence": 1}, {"sequence": 2}, {"sequence": False}])
+        == 3
+    )
+    assert (
+        TaskService._first_invalid_sequence([{"sequence": 1}, {"sequence": 2}, {"sequence": 2}])
+        == 2
+    )
+    assert TaskService._first_invalid_sequence(authorization_events()[:1]) == 1
+    assert TaskService._first_invalid_sequence(authorization_events()[:2]) == 2
     assert TaskService._first_invalid_sequence(authorization_events()) is None
+    failed = failed_events(
+        authorization_events(),
+        failure_event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+        attention_event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5",
+        resource_state="NOT_CREATED",
+    )
+    assert TaskService._first_invalid_sequence(failed) is None
+    invalid_payload = authorization_events()
+    invalid_payload[1]["payload"] = {}
+    assert TaskService._first_invalid_sequence(rehash_chain(invalid_payload)) == 2
 
 
 def test_recover_authorized_records_uncertain_failure(

@@ -19,6 +19,7 @@ from sigmacoder.adapters.git_workspace import (
 from sigmacoder.adapters.sqlite_event_store import SQLiteEventStore
 from sigmacoder.domain.events import (
     BOOTSTRAP_POLICY_ID,
+    DURABLE_BOUNDARY_INCOMPLETE_REASON,
     ZERO_HASH,
     DomainValidationError,
     ProjectionRestoreResult,
@@ -72,6 +73,24 @@ def _mapping(value: object, *, name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise SigmaCoderError("INTERNAL_ERROR", f"{name} 不是对象。")
     return dict(value)
+
+
+def _sequence_shape_location(
+    events: Sequence[Mapping[str, object]],
+) -> tuple[list[int], int | None]:
+    raw_sequences = [event.get("sequence") for event in events]
+    sequences = sorted(value for value in raw_sequences if type(value) is int)
+    if len(sequences) != len(raw_sequences):
+        return sequences, len(sequences) + 1
+    if sequences and sequences[0] < 1:
+        return sequences, 1
+    for previous, current in zip(sequences, sequences[1:], strict=False):
+        if previous == current:
+            return sequences, current
+    for expected, actual in enumerate(sequences, start=1):
+        if actual != expected:
+            return sequences, expected
+    return sequences, None
 
 
 def _normalized_objective(value: str) -> str:
@@ -541,19 +560,14 @@ class TaskService:
                         retry_on_tail_change=False,
                     )
                 raise
-        return events, result
+        ordered_events = sorted(events, key=lambda event: cast(int, event["sequence"]))
+        return ordered_events, result
 
     @staticmethod
     def _first_invalid_sequence(events: Sequence[Mapping[str, object]]) -> int | None:
-        sequences: list[int] = []
-        for event in events:
-            value = event.get("sequence")
-            if isinstance(value, int) and not isinstance(value, bool):
-                sequences.append(value)
-        sequences.sort()
-        for expected, actual in enumerate(sequences, start=1):
-            if actual != expected:
-                return expected
+        sequences, shape_error = _sequence_shape_location(events)
+        if shape_error is not None:
+            return shape_error
         ordered = sorted(
             events,
             key=lambda event: cast(int, event.get("sequence", 0)),
@@ -561,9 +575,12 @@ class TaskService:
         for index in range(1, len(ordered) + 1):
             try:
                 restore_task_projection(ordered[:index])
-            except DomainValidationError:
+            except DomainValidationError as error:
+                incomplete_boundary = error.reason == DURABLE_BOUNDARY_INCOMPLETE_REASON
+                if index < len(ordered) and incomplete_boundary:
+                    continue
                 sequence = ordered[index - 1].get("sequence")
-                return sequence if isinstance(sequence, int) else index
+                return sequence if type(sequence) is int else index
         return None
 
     def _recover_authorized(

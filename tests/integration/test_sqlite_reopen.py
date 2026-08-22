@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import Barrier
 
 import pytest
-from tests.support.event_contract import digest_oracle, event_hash_oracle
+from tests.support.event_contract import digest_oracle, event_hash_oracle, failed_events
 
 from sigmacoder.adapters.sqlite_event_store import DATABASE_NAME, SQLiteEventStore
 from sigmacoder.domain.events import (
@@ -192,6 +192,69 @@ def _create_authorized(store: SQLiteEventStore, seed: int) -> StoredTask:
     return StoredTask(task_id, workspace_relative_path, events, restored)
 
 
+def test_real_sqlite_rowid_order_does_not_define_event_order(tmp_path: Path) -> None:
+    """SPEC S09：物理逆序插入后仍必须按逻辑 sequence 读取和重建。"""
+
+    store = _store(tmp_path)
+    task_id, workspace_relative_path, events = _authorization_events(90)
+    restored = restore_task_projection(events)
+    store.create_task(
+        task_id,
+        workspace_relative_path,
+        list(reversed(events)),
+        restored.projection,
+        restored.checkpoint,
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        physical = connection.execute(
+            "SELECT sequence FROM events WHERE task_id = ? ORDER BY rowid",
+            (task_id,),
+        ).fetchall()
+
+    assert [row[0] for row in physical] == [3, 2, 1]
+    reopened = SQLiteEventStore(store.data_root)
+    reopened.initialize()
+    loaded = reopened.load_events(task_id)
+    assert [event["sequence"] for event in loaded] == [1, 2, 3]
+    assert canonical_json_bytes(restore_task_projection(loaded).projection) == canonical_json_bytes(
+        restore_task_projection(events).projection
+    )
+
+
+def test_reversed_append_batch_preserves_physical_order_but_restores_logically(
+    tmp_path: Path,
+) -> None:
+    """SPEC S09：追加批的物理顺序也不得成为隐含 API 约束。"""
+
+    store = _store(tmp_path)
+    task = _create_authorized(store, 91)
+    tail = failed_events(
+        task.events,
+        failure_event_id="50000000-0000-4000-8000-0000000005b1",
+        attention_event_id="50000000-0000-4000-8000-0000000005b2",
+        resource_state="NOT_CREATED",
+    )[3:]
+    restored = restore_task_projection([*task.events, *tail])
+    store.append_events(
+        task.task_id,
+        list(reversed(tail)),
+        restored.projection,
+        restored.checkpoint,
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        physical = connection.execute(
+            "SELECT sequence FROM events WHERE task_id = ? ORDER BY rowid",
+            (task.task_id,),
+        ).fetchall()
+
+    assert [row[0] for row in physical] == [1, 2, 3, 5, 4]
+    reopened = SQLiteEventStore(store.data_root)
+    reopened.initialize()
+    loaded = reopened.load_events(task.task_id)
+    assert [event["sequence"] for event in loaded] == [1, 2, 3, 4, 5]
+    assert restore_task_projection(loaded).projection == restored.projection
+
+
 def _derived_rows(
     database_path: Path, task_id: str
 ) -> tuple[tuple[object, ...], tuple[object, ...]]:
@@ -211,6 +274,23 @@ def _derived_rows(
     return tuple(projection), tuple(checkpoint)
 
 
+def _database_snapshot(database_path: Path) -> dict[str, tuple[tuple[object, ...], ...]]:
+    connection = sqlite3.connect(database_path)
+    try:
+        queries = {
+            "task_registry": "SELECT * FROM task_registry ORDER BY task_id",
+            "events": "SELECT * FROM events ORDER BY task_id, sequence",
+            "projections": "SELECT * FROM projections ORDER BY task_id",
+            "checkpoints": "SELECT * FROM checkpoints ORDER BY task_id",
+        }
+        return {
+            table: tuple(tuple(row) for row in connection.execute(query).fetchall())
+            for table, query in queries.items()
+        }
+    finally:
+        connection.close()
+
+
 def _assert_error_code(error: pytest.ExceptionInfo[SigmaCoderError], expected: str) -> None:
     assert error.value.code == expected
 
@@ -227,15 +307,20 @@ def test_create_task_requires_exact_initial_sequences_one_through_three(
     candidate = events[:2]
     if event_count == 4:
         candidate = [*events, _prepared_event(1, events, variant=1)]
-    restored = restore_task_projection(candidate)
+        restored = restore_task_projection(candidate)
+        projection: object = restored.projection
+        checkpoint: object = restored.checkpoint
+    else:
+        projection = {}
+        checkpoint = {}
 
     with pytest.raises(SigmaCoderError) as error:
         store.create_task(
             task_id,
             workspace_relative_path,
             candidate,
-            restored.projection,
-            restored.checkpoint,
+            projection,
+            checkpoint,
         )
 
     _assert_error_code(error, "EVENT_TRANSITION_INVALID")
@@ -269,6 +354,118 @@ def test_event_id_is_unique_across_tasks_in_one_data_root(tmp_path: Path) -> Non
     assert [event["event_id"] for event in store.load_events(first.task_id)] == [
         event["event_id"] for event in first.events
     ]
+
+
+def test_create_task_late_failure_rolls_back_all_four_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SPEC F03/F07：四表已暂存但尚未提交时失败，必须整笔回滚。"""
+
+    store = _store(tmp_path)
+    first = _create_authorized(store, 40)
+    second = _create_authorized(store, 41)
+    snapshot_before = _database_snapshot(store.database_path)
+    task_id, workspace_relative_path, events = _authorization_events(42)
+    restored = restore_task_projection(events)
+    original_write_derived = SQLiteEventStore._write_derived
+    fault_reached = False
+
+    def fail_after_all_rows_are_staged(
+        connection: sqlite3.Connection,
+        staged_task_id: str,
+        projection: object,
+        checkpoint: object,
+    ) -> None:
+        nonlocal fault_reached
+        original_write_derived(
+            connection,
+            staged_task_id,
+            projection,
+            checkpoint,
+        )
+        fault_reached = True
+        raise sqlite3.OperationalError("INJECTED_LATE_CREATE_FAILURE")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            SQLiteEventStore,
+            "_write_derived",
+            staticmethod(fail_after_all_rows_are_staged),
+        )
+        with pytest.raises(SigmaCoderError) as error:
+            store.create_task(
+                task_id,
+                workspace_relative_path,
+                events,
+                restored.projection,
+                restored.checkpoint,
+            )
+
+    assert fault_reached is True
+    _assert_error_code(error, "STORE_UNAVAILABLE")
+    reopened = SQLiteEventStore(store.data_root)
+    snapshot_after = _database_snapshot(reopened.database_path)
+    assert snapshot_after == snapshot_before
+    assert reopened.task_ids() == sorted([first.task_id, second.task_id])
+    for rows in snapshot_after.values():
+        assert all(row[0] != task_id for row in rows)
+
+
+def test_append_events_late_failure_restores_existing_event_and_derived_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SPEC F03/F07：append 已暂存事件与派生行但未提交时必须整笔回滚。"""
+
+    store = _store(tmp_path)
+    task = _create_authorized(store, 43)
+    other = _create_authorized(store, 44)
+    snapshot_before = _database_snapshot(store.database_path)
+    prepared = _prepared_event(43, task.events, variant=1)
+    restored = restore_task_projection([*task.events, prepared])
+    original_write_derived = SQLiteEventStore._write_derived
+    fault_reached = False
+
+    def fail_after_all_rows_are_staged(
+        connection: sqlite3.Connection,
+        staged_task_id: str,
+        projection: object,
+        checkpoint: object,
+    ) -> None:
+        nonlocal fault_reached
+        original_write_derived(
+            connection,
+            staged_task_id,
+            projection,
+            checkpoint,
+        )
+        fault_reached = True
+        raise sqlite3.OperationalError("INJECTED_LATE_APPEND_FAILURE")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            SQLiteEventStore,
+            "_write_derived",
+            staticmethod(fail_after_all_rows_are_staged),
+        )
+        with pytest.raises(SigmaCoderError) as error:
+            store.append_events(
+                task.task_id,
+                [prepared],
+                restored.projection,
+                restored.checkpoint,
+            )
+
+    assert fault_reached is True
+    _assert_error_code(error, "STORE_UNAVAILABLE")
+    reopened = SQLiteEventStore(store.data_root)
+    assert _database_snapshot(reopened.database_path) == snapshot_before
+    assert reopened.task_ids() == sorted([task.task_id, other.task_id])
+    assert [event["sequence"] for event in reopened.load_events(task.task_id)] == [1, 2, 3]
+    checkpoint = reopened.load_checkpoint(task.task_id)
+    assert checkpoint is not None
+    assert checkpoint["through_sequence"] == 3
 
 
 def test_two_connections_competing_for_same_tail_commit_one_terminal_event(
@@ -499,6 +696,36 @@ def test_counterfeit_append_only_trigger_fails_schema_verification(tmp_path: Pat
             AFTER INSERT ON events
             BEGIN
                 SELECT 1;
+            END;
+            """
+        )
+
+    with pytest.raises(SigmaCoderError) as error:
+        SQLiteEventStore(store.data_root).initialize()
+
+    _assert_error_code(error, "SQLITE_CORRUPT")
+
+
+@pytest.mark.parametrize(
+    ("trigger_name", "operation"),
+    (("events_reject_update", "UPDATE"), ("events_reject_delete", "DELETE")),
+)
+def test_semantically_inert_append_only_trigger_fails_exact_schema_verification(
+    tmp_path: Path,
+    trigger_name: str,
+    operation: str,
+) -> None:
+    """同名、同操作且含 token 的惰性 trigger 也不能通过 DDL 契约。"""
+
+    store = _store(tmp_path)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.executescript(
+            f"""
+            DROP TRIGGER {trigger_name};
+            CREATE TRIGGER {trigger_name}
+            BEFORE {operation} ON events
+            BEGIN
+                SELECT 'EVENTS_APPEND_ONLY';
             END;
             """
         )

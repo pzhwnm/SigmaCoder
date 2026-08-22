@@ -85,35 +85,60 @@ def checkpoint_hash_oracle(checkpoint: Mapping[str, object]) -> str:
     return digest_oracle(material)
 
 
-def action_digest() -> str:
+def action_digest(
+    *,
+    task_id: str = TASK_ID,
+    git_common_dir_realpath: str = GIT_COMMON_DIR,
+    baseline_commit: str = BASELINE_OID,
+    workspace_relative_path: str = WORKSPACE_RELATIVE_PATH,
+    ownership_nonce: str = OWNERSHIP_NONCE,
+) -> str:
     """生成前三个授权事件共同绑定的 action digest。"""
 
     return digest_oracle(
         {
-            "task_id": TASK_ID,
-            "git_common_dir_identity": GIT_COMMON_DIR,
-            "baseline_commit": BASELINE_OID,
-            "workspace_relative_path": WORKSPACE_RELATIVE_PATH,
-            "ownership_nonce": OWNERSHIP_NONCE,
+            "task_id": task_id,
+            "git_common_dir_identity": git_common_dir_realpath,
+            "baseline_commit": baseline_commit,
+            "workspace_relative_path": workspace_relative_path,
+            "ownership_nonce": ownership_nonce,
             "mode": "DETACHED",
             "bootstrap_policy_id": "builtin.workspace-provision.v1",
         }
     )
 
 
-def authorization_events(*, objective: str = "实现可靠的事件恢复") -> list[dict[str, object]]:
+def authorization_events(
+    *,
+    objective: str = "实现可靠的事件恢复",
+    task_id: str = TASK_ID,
+    correlation_id: str = CORRELATION_ID,
+    event_ids: tuple[str, str, str] = EVENT_IDS,
+    repository_realpath: str = "C:/fixture/repository",
+    git_common_dir_realpath: str = GIT_COMMON_DIR,
+    object_format: str = "sha1",
+    baseline_commit: str = BASELINE_OID,
+    workspace_relative_path: str = WORKSPACE_RELATIVE_PATH,
+    ownership_nonce: str = OWNERSHIP_NONCE,
+) -> list[dict[str, object]]:
     """构造 schema、哈希、因果关系均合法的前三个 T01 事件。"""
 
-    digest = action_digest()
+    digest = action_digest(
+        task_id=task_id,
+        git_common_dir_realpath=git_common_dir_realpath,
+        baseline_commit=baseline_commit,
+        workspace_relative_path=workspace_relative_path,
+        ownership_nonce=ownership_nonce,
+    )
     payloads: tuple[tuple[str, dict[str, object]], ...] = (
         (
             "TaskCreatedV1",
             {
                 "objective": objective,
-                "repository_realpath": "C:/fixture/repository",
-                "git_common_dir_realpath": GIT_COMMON_DIR,
-                "object_format": "sha1",
-                "baseline_commit": BASELINE_OID,
+                "repository_realpath": repository_realpath,
+                "git_common_dir_realpath": git_common_dir_realpath,
+                "object_format": object_format,
+                "baseline_commit": baseline_commit,
                 "source_dirty": False,
                 "dirty_content_included": False,
             },
@@ -121,8 +146,8 @@ def authorization_events(*, objective: str = "实现可靠的事件恢复") -> l
         (
             "TaskPreparationStartedV1",
             {
-                "workspace_relative_path": WORKSPACE_RELATIVE_PATH,
-                "ownership_nonce": OWNERSHIP_NONCE,
+                "workspace_relative_path": workspace_relative_path,
+                "ownership_nonce": ownership_nonce,
                 "proposed_action_digest": digest,
             },
         ),
@@ -131,11 +156,11 @@ def authorization_events(*, objective: str = "实现可靠的事件恢复") -> l
             {
                 "bootstrap_policy_id": "builtin.workspace-provision.v1",
                 "decision": "AUTO_ALLOWED",
-                "workspace_relative_path": WORKSPACE_RELATIVE_PATH,
-                "ownership_nonce": OWNERSHIP_NONCE,
+                "workspace_relative_path": workspace_relative_path,
+                "ownership_nonce": ownership_nonce,
                 "action_digest": digest,
                 "mode": "DETACHED",
-                "baseline_commit": BASELINE_OID,
+                "baseline_commit": baseline_commit,
             },
         ),
     )
@@ -144,18 +169,18 @@ def authorization_events(*, objective: str = "实现可靠的事件恢复") -> l
     previous_hash = ZERO_HASH
     previous_event_id: str | None = None
     for index, ((event_type, payload), event_id) in enumerate(
-        zip(payloads, EVENT_IDS, strict=True),
+        zip(payloads, event_ids, strict=True),
         start=1,
     ):
         event: dict[str, object] = {
             "event_id": event_id,
-            "task_id": TASK_ID,
+            "task_id": task_id,
             "sequence": index,
             "event_type": event_type,
             "schema_version": 1,
             "occurred_at": f"2026-08-21T00:00:0{index}.000000Z",
             "actor": "local_user",
-            "correlation_id": CORRELATION_ID,
+            "correlation_id": correlation_id,
             "causation_id": previous_event_id,
             "workspace_revision": None,
             "sensitivity": "INTERNAL",
@@ -167,6 +192,106 @@ def authorization_events(*, objective: str = "实现可靠的事件恢复") -> l
         previous_hash = str(event["event_hash"])
         previous_event_id = event_id
     return events
+
+
+def append_event(
+    events: Sequence[Mapping[str, object]],
+    event_type: str,
+    payload: Mapping[str, object],
+    *,
+    event_id: str,
+) -> list[dict[str, object]]:
+    """以独立 oracle 为合法测试流追加一条事件，不调用产品实现。"""
+
+    if not events:
+        raise ValueError("追加测试事件前必须已有权威前序事件。")
+    result = [deepcopy(dict(event)) for event in events]
+    previous = result[-1]
+    sequence = len(result) + 1
+    event: dict[str, object] = {
+        "event_id": event_id,
+        "task_id": previous["task_id"],
+        "sequence": sequence,
+        "event_type": event_type,
+        "schema_version": 1,
+        "occurred_at": f"2026-08-21T00:00:{sequence:02d}.000000Z",
+        "actor": "local_user",
+        "correlation_id": previous["correlation_id"],
+        "causation_id": previous["event_id"],
+        "workspace_revision": None,
+        "sensitivity": "INTERNAL",
+        "payload": dict(payload),
+        "previous_hash": previous["event_hash"],
+    }
+    event["event_hash"] = event_hash_oracle(event)
+    result.append(event)
+    return result
+
+
+def prepared_events(
+    events: Sequence[Mapping[str, object]],
+    *,
+    event_id: str,
+    git_pointer_digest: str = "2" * 64,
+    recovered_after_interruption: bool = False,
+) -> list[dict[str, object]]:
+    """为授权流追加合法 Prepared 终态。"""
+
+    authorization = events[2]["payload"]
+    created = events[0]["payload"]
+    if not isinstance(authorization, Mapping) or not isinstance(created, Mapping):
+        raise TypeError("测试授权流 payload 必须是对象。")
+    return append_event(
+        events,
+        "TaskWorkspacePreparedV1",
+        {
+            "action_digest": authorization["action_digest"],
+            "ownership_nonce": authorization["ownership_nonce"],
+            "workspace_relative_path": authorization["workspace_relative_path"],
+            "mode": authorization["mode"],
+            "head_oid": created["baseline_commit"],
+            "git_pointer_digest": git_pointer_digest,
+            "recovered_after_interruption": recovered_after_interruption,
+        },
+        event_id=event_id,
+    )
+
+
+def failed_events(
+    events: Sequence[Mapping[str, object]],
+    *,
+    failure_event_id: str,
+    attention_event_id: str,
+    resource_state: str,
+) -> list[dict[str, object]]:
+    """为授权流原子语义地追加 Failed 与 Attention 事实。"""
+
+    authorization = events[2]["payload"]
+    if not isinstance(authorization, Mapping):
+        raise TypeError("测试授权流 payload 必须是对象。")
+    failed = append_event(
+        events,
+        "TaskWorkspaceProvisioningFailedV1",
+        {
+            "action_digest": authorization["action_digest"],
+            "failure_stage": "git_worktree_add",
+            "error_code": "WORKSPACE_CREATE_FAILED",
+            "resource_state": resource_state,
+            "diagnostic": "受控诊断",
+        },
+        event_id=failure_event_id,
+    )
+    reason = (
+        "WORKSPACE_PROVISIONING_FAILED"
+        if resource_state == "NOT_CREATED"
+        else "WORKSPACE_PROVISIONING_UNCERTAIN"
+    )
+    return append_event(
+        failed,
+        "TaskAttentionRequiredV1",
+        {"reason": reason},
+        event_id=attention_event_id,
+    )
 
 
 def rehash_chain(events: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
