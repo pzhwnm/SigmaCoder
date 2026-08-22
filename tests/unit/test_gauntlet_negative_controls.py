@@ -98,17 +98,16 @@ def test_diff_cover_对未覆盖_changed_line_返回非零(tmp_path: Path) -> No
     assert "Failure" in result.stderr
 
 
-def test_动态_honeytoken_使真实_secret_scanner_返回非零(tmp_path: Path) -> None:
-    secret_file = tmp_path / "temporary-honeytoken.txt"
+def test_动态未跟踪_honeytoken_使真实_secret_scanner_返回非零(tmp_path: Path) -> None:
+    secret_file = tmp_path / "nested" / "temporary-honeytoken.txt"
+    secret_file.parent.mkdir()
     # 从公开的测试标签导出不可用 token，避免可匹配的秘密字面量进入受控源码。
     prefix = "".join(("gh", "p_"))
     digest = hashlib.sha256(b"sigmacoder-negative-control").hexdigest()
     fake_access_key = prefix + (digest[:18].upper() + digest[18:36])
     secret_file.write_text(f"github_token = {fake_access_key}\n", encoding="utf-8")
     git_init = run_command((environment_tool("git"), "init"), cwd=tmp_path)
-    git_add = run_command((environment_tool("git"), "add", secret_file.name), cwd=tmp_path)
     assert git_init.returncode == 0, git_init.stderr
-    assert git_add.returncode == 0, git_add.stderr
     try:
         result = run_command(
             (
