@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from coverage import Coverage
 from tools.trusted_tools import TrustedToolError, resolve_trusted_executable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 class FixtureGitError(RuntimeError):
     """测试 Git 运行时无法建立或命令失败。"""
+
+
+COVERAGE_PROCESS_ENVIRONMENT_KEYS = (
+    "COVERAGE_PROCESS_CONFIG",
+    "COVERAGE_PROCESS_START",
+)
+
+
+def active_coverage_subprocess_environment() -> dict[str, str]:
+    """仅把当前活动 coverage 实例生成的子进程配置传入真实 CLI。"""
+
+    if Coverage.current() is None:
+        return {}
+    serialized = os.environ.get("COVERAGE_PROCESS_CONFIG")
+    if not serialized:
+        raise FixtureGitError("当前 coverage 测量缺少子进程插桩配置。")
+    return {"COVERAGE_PROCESS_CONFIG": serialized}
+
+
+def isolated_coverage_subprocess_environment(
+    base: Mapping[str, str],
+) -> dict[str, str]:
+    """剥离 ambient coverage 控制项，再加入当前活动测量器配置。"""
+
+    environment = dict(base)
+    for key in COVERAGE_PROCESS_ENVIRONMENT_KEYS:
+        environment.pop(key, None)
+    environment.update(active_coverage_subprocess_environment())
+    return environment
 
 
 def _is_within(candidate: Path, root: Path) -> bool:

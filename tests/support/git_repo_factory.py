@@ -16,7 +16,11 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from referencing import Registry, Resource
-from tests.support.isolated_git import FixtureGitRuntime, create_fixture_git_runtime
+from tests.support.isolated_git import (
+    FixtureGitRuntime,
+    create_fixture_git_runtime,
+    isolated_coverage_subprocess_environment,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_ROOT = PROJECT_ROOT / "schemas" / "cli" / "v1"
@@ -202,7 +206,7 @@ def directory_snapshot(path: Path) -> dict[str, bytes]:
 def isolated_cli_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """让 CLI 子进程只加载当前 checkout，并强制 UTF-8。"""
 
-    environment = dict(os.environ if base is None else base)
+    environment = isolated_coverage_subprocess_environment(os.environ if base is None else base)
     environment["PYTHONPATH"] = str(PROJECT_ROOT / "src")
     environment["PYTHONUTF8"] = "1"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"

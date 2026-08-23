@@ -9,7 +9,14 @@ import sys
 from pathlib import Path
 
 import pytest
-from tests.support.isolated_git import create_fixture_git_runtime
+from coverage import Coverage
+from tests.e2e.test_cli_real_run import isolated_environment
+from tests.support.git_repo_factory import isolated_cli_environment
+from tests.support.isolated_git import (
+    FixtureGitError,
+    active_coverage_subprocess_environment,
+    create_fixture_git_runtime,
+)
 from tools.trusted_tools import (
     TrustedGit,
     TrustedToolError,
@@ -138,3 +145,62 @@ def test_fixture_git_不继承宿主_authority_或_template(
     assert "GIT_DIR" not in runtime.environment
     assert runtime.environment["GIT_CONFIG_COUNT"] == "0"
     assert runtime.environment["GIT_TEMPLATE_DIR"] == str(runtime.template)
+
+
+@pytest.mark.parametrize(
+    "environment_builder",
+    (isolated_cli_environment, isolated_environment),
+)
+def test_cli_环境剥离_inactive_ambient_coverage_注入(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_builder: object,
+) -> None:
+    monkeypatch.setenv("COVERAGE_PROCESS_CONFIG", "ambient-config")
+    monkeypatch.setenv("COVERAGE_PROCESS_START", "ambient-start")
+    monkeypatch.setattr(Coverage, "current", staticmethod(lambda: None))
+    assert callable(environment_builder)
+
+    environment = environment_builder(
+        {
+            "COVERAGE_PROCESS_CONFIG": "base-config",
+            "COVERAGE_PROCESS_START": "base-start",
+        }
+    )
+
+    assert active_coverage_subprocess_environment() == {}
+    assert "COVERAGE_PROCESS_CONFIG" not in environment
+    assert "COVERAGE_PROCESS_START" not in environment
+
+
+@pytest.mark.parametrize(
+    "environment_builder",
+    (isolated_cli_environment, isolated_environment),
+)
+def test_cli_环境只加入当前活动_coverage_配置(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_builder: object,
+) -> None:
+    monkeypatch.setenv("COVERAGE_PROCESS_CONFIG", "current-config")
+    monkeypatch.setenv("COVERAGE_PROCESS_START", "ambient-start")
+    monkeypatch.setattr(Coverage, "current", staticmethod(object))
+    assert callable(environment_builder)
+
+    environment = environment_builder(
+        {
+            "COVERAGE_PROCESS_CONFIG": "base-config",
+            "COVERAGE_PROCESS_START": "base-start",
+        }
+    )
+
+    assert environment["COVERAGE_PROCESS_CONFIG"] == "current-config"
+    assert "COVERAGE_PROCESS_START" not in environment
+
+
+def test_活动_coverage_缺少子进程配置时_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Coverage, "current", staticmethod(object))
+    monkeypatch.delenv("COVERAGE_PROCESS_CONFIG", raising=False)
+
+    with pytest.raises(FixtureGitError, match="缺少子进程插桩配置"):
+        active_coverage_subprocess_environment()
