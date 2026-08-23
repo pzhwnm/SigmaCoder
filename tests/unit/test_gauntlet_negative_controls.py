@@ -13,7 +13,11 @@ from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+from tools import semantic_mutants
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SEMANTIC_MANIFEST_PATH = "tools/semantic_mutants.json"
 
 
 def run_command(command: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -46,6 +50,20 @@ def environment_tool(name: str) -> str:
     resolved = shutil.which(name)
     assert resolved is not None, f"测试环境缺少真实工具：{name}"
     return resolved
+
+
+def copy_semantic_fixture(destination: Path) -> Path:
+    manifest_source = PROJECT_ROOT / SEMANTIC_MANIFEST_PATH
+    payload = json.loads(manifest_source.read_text(encoding="utf-8"))
+    paths = {SEMANTIC_MANIFEST_PATH}
+    for mutant in payload["mutants"]:
+        paths.add(mutant["source"])
+        paths.update(selector.split("::", 1)[0] for selector in mutant["selectors"])
+    for relative in paths:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PROJECT_ROOT / relative, target)
+    return destination / SEMANTIC_MANIFEST_PATH
 
 
 def test_diff_cover_对未覆盖_changed_line_返回非零(tmp_path: Path) -> None:
@@ -125,6 +143,93 @@ def test_动态未跟踪_honeytoken_使真实_secret_scanner_返回非零(tmp_pa
     assert "秘密扫描门禁失败" in result.stderr
     assert "疑似秘密" in result.stderr
     assert not secret_file.exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'github_token = "{token}"  # pragma: allowlist secret\n',
+        '# pragma: allowlist nextline secret\ngithub_token = "{token}"\n',
+    ],
+)
+def test_allowlist_pragma_不能隐藏真实_honeytoken(tmp_path: Path, content: str) -> None:
+    prefix = "".join(("gh", "p_"))
+    material = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    token = prefix + material[:36]
+    (tmp_path / "allowlisted.py").write_text(
+        content.format(token=token),
+        encoding="utf-8",
+    )
+    git_init = run_command((environment_tool("git"), "init"), cwd=tmp_path)
+    assert git_init.returncode == 0, git_init.stderr
+
+    result = run_command(
+        (
+            sys.executable,
+            str(PROJECT_ROOT / "tools/check_secrets.py"),
+            "--repo",
+            str(tmp_path),
+        ),
+        cwd=PROJECT_ROOT,
+    )
+
+    assert result.returncode != 0
+    assert "未获证明的疑似秘密" in result.stderr
+
+
+def test_真实_secret_scanner_观测并仅豁免十条已证明_hash() -> None:
+    result = run_command(
+        (
+            sys.executable,
+            str(PROJECT_ROOT / "tools/check_secrets.py"),
+            "--repo",
+            str(PROJECT_ROOT),
+        ),
+        cwd=PROJECT_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["findings"] == 0
+    assert payload["waived_findings"] == 10
+    assert payload["waiver_contract"] == "semantic-manifest-derived-v1"
+
+
+def test_semantic_manifest_额外_token_不能借哈希豁免逃逸(tmp_path: Path) -> None:
+    manifest_path = copy_semantic_fixture(tmp_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    prefix = "".join(("gh", "p_"))
+    token_material = hashlib.sha256(b"sigmacoder-manifest-negative-control").hexdigest()
+    mutant = payload["mutants"][0]
+    mutant["new"] += f'\n# github_token = "{prefix + token_material[:36]}"'
+    source = (tmp_path / mutant["source"]).read_bytes()
+    old = mutant["old"].encode("utf-8")
+    new = mutant["new"].encode("utf-8")
+    assert source.count(old) == 1
+    mutant["expected_mutant_sha256"] = hashlib.sha256(source.replace(old, new, 1)).hexdigest()
+    manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    manifest = semantic_mutants.load_manifest(manifest_path)
+    semantic_mutants._validate_repo_inputs(tmp_path, manifest)
+    git_init = run_command((environment_tool("git"), "init"), cwd=tmp_path)
+    assert git_init.returncode == 0, git_init.stderr
+
+    result = run_command(
+        (
+            sys.executable,
+            str(PROJECT_ROOT / "tools/check_secrets.py"),
+            "--repo",
+            str(tmp_path),
+        ),
+        cwd=PROJECT_ROOT,
+    )
+
+    assert result.returncode != 0
+    assert "秘密扫描门禁失败" in result.stderr
+    assert "未获证明的疑似秘密" in result.stderr
 
 
 def test_未批准许可证使真实许可证门返回非零(tmp_path: Path) -> None:
@@ -216,7 +321,10 @@ def test_本地_osv_发现使真实_pip_audit_返回非零(tmp_path: Path) -> No
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        host, port = server.server_address
+        host = server.server_address[0]
+        port = server.server_address[1]
+        assert isinstance(host, str)
+        assert isinstance(port, int)
         result = run_command(
             (
                 environment_tool("pip-audit"),
