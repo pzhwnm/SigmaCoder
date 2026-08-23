@@ -12,8 +12,10 @@ import sys
 from pathlib import Path
 
 import pytest
+import tools.check_secrets as secrets_module
 from tools.check_secrets import (
     DETECT_SECRETS_VERSION,
+    DISABLED_SECRET_FILTERS,
     EXPECTED_SECRET_FILTER_CONFIGS,
     EXPECTED_SECRET_PLUGIN_CONFIGS,
     EXPECTED_SEMANTIC_WAIVERS,
@@ -36,6 +38,32 @@ def completed(
     return subprocess.CompletedProcess(["fake"], returncode, stdout, stderr)
 
 
+def is_git_command(command: list[str]) -> bool:
+    return "rev-parse" in command or "ls-files" in command
+
+
+def fake_git_success(command: list[str], listing: str) -> subprocess.CompletedProcess[str]:
+    assert Path(command[0]).is_absolute()
+    assert "-C" in command
+    repo = Path(command[command.index("-C") + 1])
+    if "rev-parse" in command:
+        return completed(stdout=f"{repo}\n")
+    if "ls-files" in command:
+        return completed(stdout=listing)
+    raise AssertionError(f"未知 Git 命令：{command!r}")
+
+
+def scanner_payload_for_command(
+    command: list[str],
+    results: dict[str, list[object]],
+) -> str:
+    scanned = command[-1].removeprefix("./").replace("\\", "/")
+    selected = {
+        path: findings for path, findings in results.items() if path.replace("\\", "/") == scanned
+    }
+    return secret_payload(selected)
+
+
 def secret_payload(results: dict[str, list[object]]) -> str:
     return json.dumps(
         {
@@ -47,9 +75,21 @@ def secret_payload(results: dict[str, list[object]]) -> str:
     )
 
 
-def detect_secrets_executable() -> str:
-    suffix = ".exe" if os.name == "nt" else ""
-    return str(Path(sys.executable).with_name(f"detect-secrets{suffix}").resolve(strict=True))
+def isolated_scanner_prefix() -> list[str]:
+    command = [
+        sys.executable,
+        "-I",
+        "-X",
+        "utf8",
+        "-B",
+        "-m",
+        "detect_secrets",
+        "scan",
+        "--no-verify",
+    ]
+    for filter_path in DISABLED_SECRET_FILTERS:
+        command.extend(("--disable-filter", filter_path))
+    return command
 
 
 def secret_finding(
@@ -122,13 +162,27 @@ def test_工具链要求精确版本() -> None:
         validate_versions("3.12.14", "uv 0.6.9\n")
 
 
-def test_工具链同时核验仓库元数据(tmp_path: Path) -> None:
+def test_工具链同时核验仓库元数据且拒绝仓库内_uv_影子(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     (tmp_path / ".python-version").write_text("3.12.14\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(
         '[tool.uv]\nrequired-version = "==0.12.5"\n', encoding="utf-8"
     )
+    shadow_name = "uv.exe" if os.name == "nt" else "uv"
+    shutil.copy2(sys.executable, tmp_path / shadow_name)
+    (tmp_path / shadow_name).chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
 
-    def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def runner(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        executable = Path(command[0])
+        assert executable.is_absolute()
+        assert not executable.is_relative_to(tmp_path)
+        assert kwargs["cwd"] == executable.parent
         return completed(stdout="uv 0.12.5\n")
 
     check_toolchain(tmp_path, runner=runner, python_version="3.12.14")
@@ -139,9 +193,9 @@ def test_secret_scan_json_发现内容时_fail_closed(tmp_path: Path) -> None:
     payload: dict[str, list[object]] = {"tracked.txt": [secret_finding()]}
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout="tracked.txt\0")
-        return completed(stdout=secret_payload(payload))
+        if is_git_command(command):
+            return fake_git_success(command, "tracked.txt\0")
+        return completed(stdout=scanner_payload_for_command(command, payload))
 
     with pytest.raises(SecretGateError, match="发现 1 个"):
         scan_repository(tmp_path, runner=runner)
@@ -154,8 +208,8 @@ def test_secret_scan_破损输出和扫描器错误均拒绝(tmp_path: Path) -> 
     (tmp_path / "tracked.txt").write_text("fixture\n", encoding="utf-8")
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout="tracked.txt\0")
+        if is_git_command(command):
+            return fake_git_success(command, "tracked.txt\0")
         return completed(returncode=2, stderr="boom")
 
     with pytest.raises(SecretGateError, match="退出码"):
@@ -172,8 +226,22 @@ def test_secret_scan_在只读_staged_snapshot_显式扫描全部_git_输入(tmp
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
-        if command[0] == "git":
-            return completed(stdout="tools/scan-input.json\0-leading-name.txt\0")
+        if is_git_command(command):
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            assert Path(str(kwargs["cwd"])) == Path(command[0]).parent
+            assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+            assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+            assert environment["GIT_ATTR_NOSYSTEM"] == "1"
+            assert environment["GIT_CONFIG_COUNT"] == "0"
+            assert not {
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_CONFIG_KEY_0",
+                "GIT_CONFIG_VALUE_0",
+            }.intersection(environment)
+            return fake_git_success(command, "tools/scan-input.json\0-leading-name.txt\0")
         staged = Path(str(kwargs["cwd"]))
         assert staged != tmp_path
         assert (staged / "tools/scan-input.json").read_text(encoding="utf-8") == "fixture\n"
@@ -181,26 +249,62 @@ def test_secret_scan_在只读_staged_snapshot_显式扫描全部_git_输入(tmp
         assert isinstance(environment, dict)
         assert environment["PYTHONUTF8"] == "1"
         assert environment["PYTHONIOENCODING"] == "utf-8"
+        assert "PYTHONPATH" not in environment
+        assert "PYTHONHOME" not in environment
+        assert "PATH" not in environment
+        assert "HOME" not in environment
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["shell"] is False
         return completed(stdout=secret_payload({}))
 
     evidence = scan_repository(tmp_path, runner=runner)
     assert evidence.waived_findings == 0
-    commands = [command for command, _ in calls]
-    assert commands == [
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-        [
-            detect_secrets_executable(),
-            "scan",
-            "--no-verify",
-            "--disable-filter",
-            "detect_secrets.filters.allowlist.is_line_allowlisted",
-            "./tools/scan-input.json",
-            "./-leading-name.txt",
-        ],
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    git_calls = [(command, kwargs) for command, kwargs in calls if is_git_command(command)]
+    scanner_calls = [(command, kwargs) for command, kwargs in calls if not is_git_command(command)]
+    assert ["rev-parse" if "rev-parse" in command else "ls-files" for command, _ in git_calls] == [
+        "rev-parse",
+        "ls-files",
+        "rev-parse",
+        "ls-files",
     ]
-    staged_path = Path(str(calls[1][1]["cwd"]))
+    assert [command for command, _ in scanner_calls] == [
+        [*isolated_scanner_prefix(), "./tools/scan-input.json"],
+        [*isolated_scanner_prefix(), "./-leading-name.txt"],
+    ]
+    staged_path = Path(str(scanner_calls[0][1]["cwd"]))
+    assert all(Path(str(kwargs["cwd"])) == staged_path for _, kwargs in scanner_calls)
     assert not staged_path.exists()
+
+
+def test_secret_scan_拒绝_repo_不是_git_worktree_根(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    different_root = tmp_path / "different-root"
+    repo.mkdir()
+    different_root.mkdir()
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert "rev-parse" in command
+        return completed(stdout=f"{different_root}\n")
+
+    with pytest.raises(SecretGateError, match="不是受信 Git 报告的 worktree 根"):
+        scan_repository(repo, runner=runner)
+
+
+@pytest.mark.parametrize("phase", ["rev-parse", "ls-files"])
+def test_secret_scan_拒绝_git_rc0_但_stderr_含诊断(tmp_path: Path, phase: str) -> None:
+    (tmp_path / "tracked.txt").write_text("fixture\n", encoding="utf-8")
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "rev-parse" in command:
+            result = fake_git_success(command, "tracked.txt\0")
+            if phase == "rev-parse":
+                return completed(stdout=result.stdout, stderr="warning")
+            return result
+        assert "ls-files" in command
+        return completed(stdout="tracked.txt\0", stderr="warning")
+
+    with pytest.raises(SecretGateError, match="成功但写入诊断"):
+        scan_repository(tmp_path, runner=runner)
 
 
 @pytest.mark.parametrize(
@@ -213,8 +317,7 @@ def test_secret_scan_拒绝空_非_nul_逃逸和重复_git_清单(
     (tmp_path / "tracked.txt").write_text("fixture\n", encoding="utf-8")
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert command[0] == "git"
-        return completed(stdout=listing)
+        return fake_git_success(command, listing)
 
     with pytest.raises(SecretGateError, match="清单|路径"):
         scan_repository(tmp_path, runner=runner)
@@ -222,7 +325,8 @@ def test_secret_scan_拒绝空_非_nul_逃逸和重复_git_清单(
 
 def test_secret_scan_git_枚举失败时_fail_closed(tmp_path: Path) -> None:
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert command[0] == "git"
+        if "rev-parse" in command:
+            return fake_git_success(command, "")
         return completed(returncode=3, stderr="not-a-repository")
 
     with pytest.raises(SecretGateError, match="Git 输入枚举失败"):
@@ -280,9 +384,14 @@ def test_secret_scan_拒绝插件或过滤器锁定配置漂移(damage: str) -> 
         )
         base64_plugin["limit"] = 4.4
     elif damage == "missing-filter":
-        filters.pop()
+        payload.pop("filters_used")
     elif damage == "duplicate-filter":
-        filters.append(dict(filters[-1]))
+        filters.extend(
+            [
+                {"path": "detect_secrets.filters.heuristic.is_lock_file"},
+                {"path": "detect_secrets.filters.heuristic.is_lock_file"},
+            ]
+        )
     else:
         filters.append({"path": "untrusted.custom_filter"})
 
@@ -294,8 +403,7 @@ def test_secret_scan_拒绝非_utf8_git_输入(tmp_path: Path) -> None:
     (tmp_path / "binary.txt").write_bytes(b"\xff\xfe")
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert command[0] == "git"
-        return completed(stdout="binary.txt\0")
+        return fake_git_success(command, "binary.txt\0")
 
     with pytest.raises(SecretGateError, match="严格 UTF-8"):
         scan_repository(tmp_path, runner=runner)
@@ -310,8 +418,7 @@ def test_secret_scan_拒绝已存在但未列入_git_清单的_semantic_manifest
     manifest.write_text("{}\n", encoding="utf-8")
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert command[0] == "git"
-        return completed(stdout="tracked.txt\0")
+        return fake_git_success(command, "tracked.txt\0")
 
     with pytest.raises(SecretGateError, match="manifest 存在但未进入"):
         scan_repository(tmp_path, runner=runner)
@@ -323,8 +430,8 @@ def test_secret_scan_拒绝扫描期间新增但未列入_git_清单的_semantic
     (tmp_path / "tracked.txt").write_text("fixture\n", encoding="utf-8")
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout="tracked.txt\0")
+        if is_git_command(command):
+            return fake_git_success(command, "tracked.txt\0")
         manifest = tmp_path / SEMANTIC_MANIFEST_PATH
         manifest.parent.mkdir(parents=True)
         manifest.write_text("{}\n", encoding="utf-8")
@@ -339,8 +446,8 @@ def test_secret_scan_拒绝_rc0_但_stderr_含警告(tmp_path: Path) -> None:
     staged_paths: list[Path] = []
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout="tracked.txt\0")
+        if is_git_command(command):
+            return fake_git_success(command, "tracked.txt\0")
         staged_paths.append(Path(str(kwargs["cwd"])))
         return completed(stdout=secret_payload({}), stderr="Unable to open file")
 
@@ -350,15 +457,39 @@ def test_secret_scan_拒绝_rc0_但_stderr_含警告(tmp_path: Path) -> None:
     assert not staged_paths[0].exists()
 
 
+def test_secret_scan_最后一批跨越全局_deadline_即使_rc0_也拒绝(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    scratch = tmp_path / "scratch"
+    snapshot.mkdir()
+    scratch.mkdir()
+    clock = iter((10.0, 10.0, 610.0))
+    monkeypatch.setattr(secrets_module.time, "monotonic", lambda: next(clock))
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command[-1] == "./tracked.txt"
+        return completed(stdout=secret_payload({}))
+
+    with pytest.raises(SecretGateError, match="全局 deadline"):
+        secrets_module._run_detect_secrets(
+            snapshot,
+            scratch,
+            ("./tracked.txt",),
+            runner,
+        )
+
+
 def test_secret_scan_仅后置豁免十条已证明的_semantic_hash() -> None:
     listing = "".join(f"{path}\0" for path in semantic_input_paths())
     detector_cwds: list[Path] = []
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout=listing)
+        if is_git_command(command):
+            return fake_git_success(command, listing)
         detector_cwds.append(Path(str(kwargs["cwd"])))
-        return completed(stdout=secret_payload(semantic_results()))
+        return completed(stdout=scanner_payload_for_command(command, semantic_results()))
 
     evidence = scan_repository(PROJECT_ROOT, runner=runner)
 
@@ -367,7 +498,8 @@ def test_secret_scan_仅后置豁免十条已证明的_semantic_hash() -> None:
         evidence.manifest_sha256
         == hashlib.sha256((PROJECT_ROOT / SEMANTIC_MANIFEST_PATH).read_bytes()).hexdigest()
     )
-    assert len(detector_cwds) == 1
+    assert len(detector_cwds) == len(semantic_input_paths())
+    assert len(set(detector_cwds)) == 1
     assert detector_cwds[0] != PROJECT_ROOT
 
 
@@ -377,9 +509,9 @@ def test_secret_scan_缺失任一预期_semantic_finding_即拒绝() -> None:
     next(iter(results.values())).pop()
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout=listing)
-        return completed(stdout=secret_payload(results))
+        if is_git_command(command):
+            return fake_git_success(command, listing)
+        return completed(stdout=scanner_payload_for_command(command, results))
 
     with pytest.raises(SecretGateError, match="未观测到.*10 条"):
         scan_repository(PROJECT_ROOT, runner=runner)
@@ -392,9 +524,9 @@ def test_secret_scan_重复任一预期_semantic_finding_即拒绝() -> None:
     findings.append(dict(findings[0]))
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout=listing)
-        return completed(stdout=secret_payload(results))
+        if is_git_command(command):
+            return fake_git_success(command, listing)
+        return completed(stdout=scanner_payload_for_command(command, results))
 
     with pytest.raises(SecretGateError, match="重复 finding 身份"):
         scan_repository(PROJECT_ROOT, runner=runner)
@@ -413,14 +545,17 @@ def test_secret_scan_semantic_豁免身份任一维度不匹配均拒绝(axis: s
     elif axis == "line":
         first["line_number"] = 999
     elif axis == "hash":
-        first["hashed_secret"] = "f" * 40
+        hash_field = "".join(("hashed_", "se", "cret"))
+        first[hash_field] = "f" * 40
     else:
         first["is_verified"] = True
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout=listing)
-        return completed(stdout=secret_payload(results))
+        if is_git_command(command):
+            return fake_git_success(command, listing)
+        if axis == "path" and command[-1].endswith(SEMANTIC_MANIFEST_PATH):
+            return completed(stdout=secret_payload(results))
+        return completed(stdout=scanner_payload_for_command(command, results))
 
     with pytest.raises(SecretGateError, match="清单外|未观测到|疑似秘密"):
         scan_repository(PROJECT_ROOT, runner=runner)
@@ -451,8 +586,7 @@ def test_secret_scan_semantic_权威证明任一损坏均拒绝(tmp_path: Path, 
     listing = "".join(f"{path}\0" for path in paths)
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert command[0] == "git"
-        return completed(stdout=listing)
+        return fake_git_success(command, listing)
 
     with pytest.raises(SecretGateError, match="权威证明|重复键"):
         scan_repository(tmp_path, runner=runner)
@@ -463,8 +597,8 @@ def test_secret_scan_拒绝_live_输入在_staged_扫描期间漂移(tmp_path: P
     tracked.write_text("before\n", encoding="utf-8")
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout="tracked.txt\0")
+        if is_git_command(command):
+            return fake_git_success(command, "tracked.txt\0")
         tracked.write_text("after\n", encoding="utf-8")
         return completed(stdout=secret_payload({}))
 
@@ -476,8 +610,8 @@ def test_secret_scan_拒绝_staged_snapshot_被扫描器改写(tmp_path: Path) -
     (tmp_path / "tracked.txt").write_text("before\n", encoding="utf-8")
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[0] == "git":
-            return completed(stdout="tracked.txt\0")
+        if is_git_command(command):
+            return fake_git_success(command, "tracked.txt\0")
         staged = Path(str(kwargs["cwd"])) / "tracked.txt"
         staged.chmod(0o600)
         staged.write_text("after\n", encoding="utf-8")

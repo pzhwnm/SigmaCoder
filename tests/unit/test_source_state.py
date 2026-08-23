@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-import subprocess
+import os
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
+from tests.support.isolated_git import (
+    create_fixture_git_runtime,
+    sibling_control_root,
+)
 from tools.source_state import SourceStateError, assert_clean, inspect_source_state
 
 
 def git(repo: Path, *arguments: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), *arguments],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+    runtime = create_fixture_git_runtime(
+        sibling_control_root(repo),
+        untrusted_boundary=repo,
     )
+    result = runtime.init(repo) if arguments == ("init",) else runtime.run(repo, arguments)
+    assert result.returncode == 0, result.stderr
 
 
 def clean_repo(tmp_path: Path) -> Path:
@@ -59,3 +64,23 @@ def test_四类源状态负控分别失败(tmp_path: Path, kind: str) -> None:
 def test_非_git_目录不能误报干净(tmp_path: Path) -> None:
     with pytest.raises(SourceStateError, match="Git 命令退出码"):
         inspect_source_state(tmp_path)
+
+
+def test_仓库内_git_影子不能伪造干净源状态(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = clean_repo(tmp_path)
+    shadow_name = "git.exe" if os.name == "nt" else "git"
+    shadow = repo / shadow_name
+    shutil.copy2(sys.executable, shadow)
+    shadow.chmod(0o755)
+    exclude = repo / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text(f"{shadow_name}\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(repo) + os.pathsep + os.environ.get("PATH", ""))
+
+    state = inspect_source_state(repo)
+
+    assert_clean(state)
+    assert all(not paths for paths in state.values())

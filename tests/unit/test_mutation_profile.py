@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import subprocess
+import sys
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,6 +16,10 @@ from typing import cast
 import pytest
 import tools.run_mutation_profile as mutation_module
 from mutmut.configuration import _load_config
+from tests.support.isolated_git import (
+    create_fixture_git_runtime,
+    sibling_control_root,
+)
 from tools.check_mutation_reports import (
     MutationReportError,
     check_reports,
@@ -120,21 +126,17 @@ def create_inputs(root: Path) -> None:
         "mutants/\nmutation-reports/\n__pycache__/\n*.pyc\n",
         encoding="utf-8",
     )
-    subprocess.run(
-        ["git", "init", "-q"],
-        cwd=root,
-        capture_output=True,
-        check=True,
+    runtime = create_fixture_git_runtime(
+        sibling_control_root(root),
+        untrusted_boundary=root,
     )
-    subprocess.run(
-        ["git", "add", "."],
-        cwd=root,
-        capture_output=True,
-        check=True,
-    )
-    subprocess.run(
-        [
-            "git",
+    initialized = runtime.init(root)
+    assert initialized.returncode == 0, initialized.stderr
+    added = runtime.run(root, ("add", "."))
+    assert added.returncode == 0, added.stderr
+    committed = runtime.run(
+        root,
+        (
             "-c",
             "user.name=SigmaCoder Tests",
             "-c",
@@ -143,11 +145,9 @@ def create_inputs(root: Path) -> None:
             "-q",
             "-m",
             "fixture",
-        ],
-        cwd=root,
-        capture_output=True,
-        check=True,
+        ),
     )
+    assert committed.returncode == 0, committed.stderr
 
 
 def is_mutmut_command(command: Sequence[str], subcommand: str) -> bool:
@@ -287,10 +287,14 @@ def test_profile_连续两次全量并追加_property_only(
     assert [item["kind"] for item in runs] == ["full", "full", "property-only"]
     assert mutation_runs == 3
     assert len(calls) == 6
-    assert [command for command in calls if is_mutmut_command(command, "results")] == [
-        ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
-        ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
-        ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
+    result_commands = [command for command in calls if is_mutmut_command(command, "results")]
+    trusted_uv = Path(result_commands[0][0])
+    assert trusted_uv.is_absolute()
+    assert not trusted_uv.is_relative_to(tmp_path)
+    assert result_commands == [
+        [str(trusted_uv), "run", "--frozen", "mutmut", "results", "--all", "true"],
+        [str(trusted_uv), "run", "--frozen", "mutmut", "results", "--all", "true"],
+        [str(trusted_uv), "run", "--frozen", "mutmut", "results", "--all", "true"],
     ]
     assert not (tmp_path / "setup.cfg").exists()
     assert (tmp_path / "mutation-reports/events.json").is_file()
@@ -455,6 +459,32 @@ def test_profile_精确匹配_gauntlet_父_lease_token_后获取子锁(
         assert not (tmp_path / "mutation-reports" / MUTATION_LOCK_FILE).exists()
 
     assert not (tmp_path / "mutation-reports" / REPOSITORY_LEASE_FILE).exists()
+
+
+def test_profile_仓库内_git_影子不能伪造绑定(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_inputs(tmp_path)
+    profile = load_profile(write_profile(tmp_path), "events")
+    shadow_name = "git.exe" if os.name == "nt" else "git"
+    shadow = tmp_path / shadow_name
+    shutil.copy2(sys.executable, shadow)
+    shadow.chmod(0o755)
+    exclude = tmp_path / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text(f"{shadow_name}\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+
+    def runner(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if is_mutmut_command(command, "results"):
+            return subprocess.CompletedProcess(command, 0, "    a__mutmut_1: killed\n", "")
+        return subprocess.CompletedProcess(command, 0, "run ok\n", "")
+
+    report = run_profile(tmp_path, profile, runner=runner, require_posix=False)
+
+    evidence = cast(dict[str, object], report["evidence"])
+    assert evidence["git_head"]
 
 
 def test_profile_拒绝伪造或不匹配的_gauntlet_父_lease_token(

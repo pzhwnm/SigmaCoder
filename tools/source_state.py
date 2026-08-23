@@ -9,6 +9,14 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+if __package__:
+    from tools.trusted_tools import TrustedGit, TrustedToolError
+else:  # pragma: no cover - 由真实脚本入口覆盖
+    from trusted_tools import (  # type: ignore[import-not-found,no-redef]
+        TrustedGit,
+        TrustedToolError,
+    )
+
 
 class SourceStateError(RuntimeError):
     """Git 源状态不可读或不干净。"""
@@ -17,19 +25,19 @@ class SourceStateError(RuntimeError):
 Runner = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
-def _git_paths(repo: Path, arguments: Sequence[str], runner: Runner) -> set[str]:
-    command = ["git", "-C", str(repo), *arguments, "-z"]
+def _open_git(repo: Path, runner: Runner = subprocess.run) -> TrustedGit:
     try:
-        result = runner(command, capture_output=True, timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise SourceStateError(f"无法执行 {' '.join(command[:-1])}：{exc}") from exc
-    if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        raise SourceStateError(f"Git 命令退出码 {result.returncode}：{stderr}")
+        return TrustedGit.open(repo, runner=runner)
+    except TrustedToolError as exc:
+        raise SourceStateError(f"Git 命令退出码或权威核验失败：{exc}") from exc
+
+
+def _git_paths(git: TrustedGit, arguments: Sequence[str]) -> set[str]:
     try:
-        return {
-            item.decode("utf-8", errors="strict") for item in result.stdout.split(b"\0") if item
-        }
+        raw = git.read((*arguments, "-z"), label="Git 源状态")
+        return {item.decode("utf-8", errors="strict") for item in raw.split(b"\0") if item}
+    except TrustedToolError as exc:
+        raise SourceStateError(str(exc)) from exc
     except UnicodeDecodeError as exc:
         raise SourceStateError(f"Git 路径不是有效 UTF-8：{exc}") from exc
 
@@ -40,11 +48,12 @@ def inspect_source_state(
     runner: Runner = subprocess.run,
 ) -> dict[str, list[str]]:
     repo = repo.resolve()
-    staged = _git_paths(repo, ["diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB"], runner)
-    unstaged = _git_paths(repo, ["diff", "--name-only", "--diff-filter=ACMRTUXB"], runner)
-    deleted = _git_paths(repo, ["diff", "--name-only", "--diff-filter=D"], runner)
-    deleted |= _git_paths(repo, ["diff", "--cached", "--name-only", "--diff-filter=D"], runner)
-    untracked = _git_paths(repo, ["ls-files", "--others", "--exclude-standard"], runner)
+    git = _open_git(repo, runner)
+    staged = _git_paths(git, ["diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB"])
+    unstaged = _git_paths(git, ["diff", "--name-only", "--diff-filter=ACMRTUXB"])
+    deleted = _git_paths(git, ["diff", "--name-only", "--diff-filter=D"])
+    deleted |= _git_paths(git, ["diff", "--cached", "--name-only", "--diff-filter=D"])
+    untracked = _git_paths(git, ["ls-files", "--others", "--exclude-standard"])
     return {
         "staged": sorted(staged),
         "unstaged": sorted(unstaged),
@@ -62,20 +71,9 @@ def assert_clean(state: dict[str, list[str]]) -> None:
 
 def head_sha(repo: Path) -> str:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise SourceStateError(f"无法读取 HEAD：{exc}") from exc
-    if result.returncode != 0 or not result.stdout.strip():
-        raise SourceStateError(f"HEAD 不可用：{result.stderr.strip()}")
-    return result.stdout.strip()
+        return TrustedGit.open(repo).head_commit()
+    except TrustedToolError as exc:
+        raise SourceStateError(f"HEAD 不可用：{exc}") from exc
 
 
 def build_parser() -> argparse.ArgumentParser:

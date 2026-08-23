@@ -25,11 +25,16 @@ if __package__:
         RepositoryLeaseError,
         parent_or_standalone_repository_lease,
     )
+    from tools.trusted_tools import TrustedGit, TrustedToolError
 else:  # pragma: no cover - 由真实脚本入口覆盖
     from repo_lease import (  # type: ignore[import-not-found,no-redef]
         REPOSITORY_LEASE_TOKEN_ENV,
         RepositoryLeaseError,
         parent_or_standalone_repository_lease,
+    )
+    from trusted_tools import (  # type: ignore[import-not-found,no-redef]
+        TrustedGit,
+        TrustedToolError,
     )
 
 MANIFEST_NAME: Final = "semantic_mutants.json"
@@ -397,21 +402,9 @@ def _source_binding(
 
 def _git_head(repo: Path) -> str:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise SemanticMutationError(f"无法读取语义变异对应的 Git HEAD：{error}") from error
-    head = result.stdout.strip()
-    if result.returncode != 0 or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is None:
-        raise SemanticMutationError("语义变异对应的 Git HEAD 不可用。")
-    return head
+        return TrustedGit.open(repo).head_commit()
+    except TrustedToolError as error:
+        raise SemanticMutationError(f"语义变异对应的 Git HEAD 不可用：{error}") from error
 
 
 def _os_release_is_ubuntu(value: str) -> bool:

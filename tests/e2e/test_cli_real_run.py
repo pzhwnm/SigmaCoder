@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from referencing import Registry, Resource
+from tests.support.isolated_git import FixtureGitRuntime, create_fixture_git_runtime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_ROOT = PROJECT_ROOT / "schemas" / "cli" / "v1"
@@ -31,20 +32,12 @@ class GitRepository:
     """不继承宿主 Git 配置的临时源仓库。"""
 
     path: Path
+    git_runtime: FixtureGitRuntime
     environment: Mapping[str, str]
     baseline_oid: str
 
     def git(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            ["git", "-C", str(self.path), *arguments],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=dict(self.environment),
-            timeout=20,
-        )
+        result = self.git_runtime.run(self.path, arguments, timeout=20)
         if check and result.returncode != 0:
             pytest.fail(
                 f"测试 Git 命令失败：git {' '.join(arguments)}\n{result.stderr}",
@@ -84,30 +77,14 @@ def create_repository(tmp_path: Path) -> GitRepository:
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     repo = tmp_path / "source-repository"
-    global_config = tmp_path / "isolated-global.gitconfig"
-    global_config.write_text("", encoding="utf-8")
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": str(global_config),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_PAGER": "cat",
-            "GIT_OPTIONAL_LOCKS": "0",
-        }
+    git_runtime = create_fixture_git_runtime(
+        tmp_path / "git-control",
+        untrusted_boundary=tmp_path,
     )
-    initialized = subprocess.run(
-        ["git", "init", "--initial-branch=main", str(repo)],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=environment,
-        timeout=20,
-    )
+    environment = dict(git_runtime.environment)
+    initialized = git_runtime.init(repo)
     assert initialized.returncode == 0, initialized.stderr
-    repository = GitRepository(repo, environment, "")
+    repository = GitRepository(repo, git_runtime, environment, "")
     repository.git("config", "user.name", "SigmaCoder Contract")
     repository.git("config", "user.email", "contract@example.invalid")
     (repo / ".gitignore").write_text("*.ignored\n", encoding="utf-8")
@@ -115,7 +92,7 @@ def create_repository(tmp_path: Path) -> GitRepository:
     repository.git("add", ".gitignore", "tracked.txt")
     repository.git("commit", "-m", "contract baseline")
     baseline = repository.git("rev-parse", "HEAD").stdout.strip()
-    return GitRepository(repo, environment, baseline)
+    return GitRepository(repo, git_runtime, environment, baseline)
 
 
 def source_fingerprint(repository: GitRepository) -> dict[str, object]:

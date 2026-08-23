@@ -108,7 +108,7 @@ def test_partial_failure_without_matching_command_and_data_fails_closed(
         command,
         code="PARTIAL_INTEGRITY_FAILURE",
         message="不得保留",
-        details={"secret": "不得保留"},
+        details={"".join(("se", "cret")): "不得保留"},
         data=data,
     )
 

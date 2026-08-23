@@ -24,11 +24,17 @@ if __package__:
         RepositoryLeaseError,
         parent_or_standalone_repository_lease,
     )
+    from tools.trusted_tools import TrustedGit, TrustedToolError, resolve_trusted_uv
 else:  # pragma: no cover - 由真实脚本入口覆盖
     from repo_lease import (  # type: ignore[no-redef]
         REPOSITORY_LEASE_TOKEN_ENV,
         RepositoryLeaseError,
         parent_or_standalone_repository_lease,
+    )
+    from trusted_tools import (  # type: ignore[import-not-found,no-redef]
+        TrustedGit,
+        TrustedToolError,
+        resolve_trusted_uv,
     )
 
 KNOWN_STATUSES = frozenset(
@@ -360,44 +366,28 @@ def validate_inputs(repo: Path, profile: MutationProfile) -> None:
     _managed_report_path(repo, profile)
 
 
+def _open_git(repo: Path) -> TrustedGit:
+    try:
+        return TrustedGit.open(repo)
+    except TrustedToolError as exc:
+        raise MutationGateError(str(exc)) from exc
+
+
 def _git_status(repo: Path) -> bytes:
     try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "status",
-                "--porcelain=v2",
-                "-z",
-                "--untracked-files=all",
-            ],
-            capture_output=True,
-            timeout=30,
-            check=False,
+        return _open_git(repo).read(
+            ("status", "--porcelain=v2", "-z", "--untracked-files=all"),
+            label="mutation 前后 Git 状态",
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise MutationGateError(f"无法读取 mutation 前后 Git 状态：{exc}") from exc
-    if result.returncode != 0:
-        diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
-        raise MutationGateError(f"无法读取 mutation 前后 Git 状态：{diagnostic}")
-    return result.stdout
+    except TrustedToolError as exc:
+        raise MutationGateError(str(exc)) from exc
 
 
 def _git_head(repo: Path) -> bytes:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise MutationGateError(f"无法读取 mutation 对应的 Git HEAD：{exc}") from exc
-    if result.returncode != 0:
-        diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
-        raise MutationGateError(f"无法读取 mutation 对应的 Git HEAD：{diagnostic}")
-    return result.stdout.strip()
+        return _open_git(repo).head_commit().encode("ascii")
+    except TrustedToolError as exc:
+        raise MutationGateError(str(exc)) from exc
 
 
 def _protected_paths(profile: MutationProfile) -> tuple[str, ...]:
@@ -415,11 +405,8 @@ def _protected_paths(profile: MutationProfile) -> tuple[str, ...]:
 
 def _git_protected_files(repo: Path, protected_paths: Sequence[str]) -> tuple[Path, ...]:
     try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
+        stdout = _open_git(repo).read(
+            (
                 "ls-files",
                 "-z",
                 "--cached",
@@ -427,17 +414,12 @@ def _git_protected_files(repo: Path, protected_paths: Sequence[str]) -> tuple[Pa
                 "--exclude-standard",
                 "--",
                 *protected_paths,
-            ],
-            capture_output=True,
-            timeout=30,
-            check=False,
+            ),
+            label="mutation 受保护文件枚举",
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise MutationGateError(f"无法枚举 mutation 受保护文件：{exc}") from exc
-    if result.returncode != 0:
-        diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
-        raise MutationGateError(f"无法枚举 mutation 受保护文件：{diagnostic}")
-    return tuple(Path(os.fsdecode(raw)) for raw in result.stdout.split(b"\0") if raw)
+    except TrustedToolError as exc:
+        raise MutationGateError(str(exc)) from exc
+    return tuple(Path(os.fsdecode(raw)) for raw in stdout.split(b"\0") if raw)
 
 
 def _repository_fingerprint(repo: Path, profile: MutationProfile) -> str:
@@ -672,10 +654,14 @@ def _run_once(
     source_before = _repository_fingerprint(repo, profile)
     setup_lease: _SetupConfigLease | None = None
     try:
+        try:
+            uv_executable = resolve_trusted_uv(repo)
+        except TrustedToolError as exc:
+            raise MutationGateError(str(exc)) from exc
         setup_lease = _write_setup_cfg(repo, profile, tests)
         run_result = _run_command(
             [
-                "uv",
+                str(uv_executable),
                 "run",
                 "--frozen",
                 "mutmut",
@@ -692,7 +678,7 @@ def _run_once(
                 f"mutmut run 退出码为 {run_result.returncode}：{run_result.stderr.strip()}"
             )
         result = _run_command(
-            ["uv", "run", "--frozen", "mutmut", "results", "--all", "true"],
+            [str(uv_executable), "run", "--frozen", "mutmut", "results", "--all", "true"],
             repo=repo,
             timeout=120,
             runner=runner,

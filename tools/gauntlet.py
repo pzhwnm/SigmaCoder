@@ -25,6 +25,7 @@ if __package__:
         RepositoryLeaseError,
         acquire_repository_lease,
     )
+    from tools.trusted_tools import TrustedGit, TrustedToolError, resolve_trusted_uv
 else:  # pragma: no cover - 由真实脚本入口覆盖
     from check_junit import CORE_PROPERTY_NODEIDS  # type: ignore[no-redef]
     from repo_lease import (  # type: ignore[no-redef]
@@ -32,6 +33,11 @@ else:  # pragma: no cover - 由真实脚本入口覆盖
         REPOSITORY_LEASE_TOKEN_ENV,
         RepositoryLeaseError,
         acquire_repository_lease,
+    )
+    from trusted_tools import (  # type: ignore[import-not-found,no-redef]
+        TrustedGit,
+        TrustedToolError,
+        resolve_trusted_uv,
     )
 
 SPEC_VERSION = "r4"
@@ -409,36 +415,18 @@ def _is_link_or_junction(path: Path) -> bool:
     return path.is_symlink() or bool(is_junction()) or bool(attributes & reparse_flag)
 
 
-def _git_head(repo: Path) -> str:
-    raw = _git_output(
-        repo,
-        ("rev-parse", "--verify", "HEAD^{commit}"),
-        "Git HEAD",
-    )
+def _git_head(git: TrustedGit) -> str:
     try:
-        head = raw.decode("ascii").strip()
-    except UnicodeError as exc:
-        raise GauntletError(f"Git HEAD 不是 ASCII：{exc}") from exc
-    if len(head) not in {40, 64} or any(character not in "0123456789abcdef" for character in head):
-        raise GauntletError("无法读取有效 Git HEAD。")
-    return head
+        return git.head_commit()
+    except TrustedToolError as exc:
+        raise GauntletError(f"无法读取 Git HEAD：{exc}") from exc
 
 
-def _git_output(repo: Path, arguments: Sequence[str], label: str) -> bytes:
+def _git_output(git: TrustedGit, arguments: Sequence[str], label: str) -> bytes:
     try:
-        result = subprocess.run(
-            ["git", *arguments],
-            cwd=repo,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        return git.read(arguments, label=label)
+    except TrustedToolError as exc:
         raise GauntletError(f"无法读取 {label}：{exc}") from exc
-    if result.returncode != 0:
-        error = result.stderr.decode("utf-8", errors="replace").strip()
-        raise GauntletError(f"无法读取 {label}：{error}")
-    return result.stdout
 
 
 def _protected_file_bytes(path: Path, label: str) -> bytes:
@@ -484,9 +472,9 @@ def _read_input_bytes(path: Path, relative_text: str) -> bytes:
         raise GauntletError(f"无法读取 Git 输入 {relative_text}：{exc}") from exc
 
 
-def _input_tree_digest(repo: Path) -> tuple[str, int]:
+def _input_tree_digest(repo: Path, git: TrustedGit) -> tuple[str, int]:
     raw_paths = _git_output(
-        repo,
+        git,
         ("ls-files", "-z", "--cached", "--others", "--exclude-standard"),
         "Git 非忽略输入清单",
     )
@@ -524,16 +512,21 @@ def _capture_repository_binding(
     repo: Path,
     profile: str,
     layers: Sequence[Layer],
+    git: TrustedGit,
 ) -> RepositoryBinding:
-    git_head = _git_head(repo)
+    try:
+        git.assert_root()
+    except TrustedToolError as exc:
+        raise GauntletError(str(exc)) from exc
+    git_head = _git_head(git)
     git_status_sha256 = hashlib.sha256(
         _git_output(
-            repo,
+            git,
             ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
             "Git status",
         )
     ).hexdigest()
-    input_tree_sha256, input_file_count = _input_tree_digest(repo)
+    input_tree_sha256, input_file_count = _input_tree_digest(repo, git)
     uv_lock_sha256 = hashlib.sha256(_protected_file_bytes(repo / "uv.lock", "uv.lock")).hexdigest()
     mutation_profiles_sha256 = hashlib.sha256(
         _protected_file_bytes(
@@ -575,10 +568,11 @@ def _verify_repository_binding(
     repo: Path,
     profile: str,
     layers: Sequence[Layer],
+    git: TrustedGit,
     expected: RepositoryBinding,
     phase: str,
 ) -> None:
-    actual = _capture_repository_binding(repo, profile, layers)
+    actual = _capture_repository_binding(repo, profile, layers, git)
     if actual == expected:
         return
     changed = [
@@ -676,6 +670,7 @@ def _execute(
     timeout: int,
     runner: CommandRunner,
     repository_lease_token: str | None = None,
+    trusted_uv: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = dict(os.environ)
     environment["PYTHONUTF8"] = "1"
@@ -683,9 +678,16 @@ def _execute(
     environment.pop(REPOSITORY_LEASE_TOKEN_ENV, None)
     if repository_lease_token is not None and _is_repository_lease_child(command):
         environment[REPOSITORY_LEASE_TOKEN_ENV] = repository_lease_token
+    actual_command = list(command)
+    if actual_command[0] == "uv":
+        try:
+            uv_executable = trusted_uv or resolve_trusted_uv(repo)
+        except TrustedToolError as exc:
+            raise GauntletError(str(exc)) from exc
+        actual_command[0] = str(uv_executable)
     try:
         return runner(
-            list(command),
+            actual_command,
             cwd=repo,
             capture_output=True,
             text=True,
@@ -750,7 +752,7 @@ def _is_lower_sha256(value: object) -> bool:
     return (
         isinstance(value, str)
         and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
+        and all(("0" <= character <= "9") or ("a" <= character <= "f") for character in value)
     )
 
 
@@ -865,7 +867,10 @@ def _validate_json_command_output(command: Sequence[str], stdout: str) -> object
             or not _is_lower_sha256(payload.get("report_sha256"))
             or not isinstance(payload.get("git_head"), str)
             or len(payload["git_head"]) not in {40, 64}
-            or any(character not in "0123456789abcdef" for character in payload["git_head"])
+            or any(
+                not (("0" <= character <= "9") or ("a" <= character <= "f"))
+                for character in payload["git_head"]
+            )
             or payload.get("mutants") != 8
             or isinstance(payload.get("mutants"), bool)
         ):
@@ -896,6 +901,7 @@ def _execute_with_state_guard(
     timeout: int,
     runner: CommandRunner,
     repository_lease_token: str | None,
+    trusted_uv: Path | None,
     state_guard: StateGuard | None,
     command_index: int,
 ) -> subprocess.CompletedProcess[str]:
@@ -907,6 +913,7 @@ def _execute_with_state_guard(
         timeout=timeout,
         runner=runner,
         repository_lease_token=repository_lease_token,
+        trusted_uv=trusted_uv,
     )
     if state_guard is not None:
         state_guard(f"命令 {command_index} 执行后")
@@ -919,6 +926,7 @@ def run_layer(
     *,
     runner: CommandRunner = subprocess.run,
     repository_lease_token: str | None = None,
+    trusted_uv: Path | None = None,
     state_guard: StateGuard | None = None,
 ) -> LayerResult:
     started = time.monotonic()
@@ -932,6 +940,7 @@ def run_layer(
             timeout=layer.timeout_seconds,
             runner=runner,
             repository_lease_token=repository_lease_token,
+            trusted_uv=trusted_uv,
             state_guard=state_guard,
             command_index=command_index,
         )
@@ -992,8 +1001,10 @@ def run_gauntlet(
         validate_platform(profile)
     layers = build_manifest(profile)
     try:
+        git = TrustedGit.open(repo)
+        trusted_uv = resolve_trusted_uv(repo)
         with acquire_repository_lease(repo, f"gauntlet:{profile}") as lease:
-            binding = _capture_repository_binding(repo, profile, layers)
+            binding = _capture_repository_binding(repo, profile, layers, git)
             cleanup_paths(repo, STALE_PATHS)
             cleanup_globs(repo, STALE_GLOBS)
             results: list[LayerResult] = []
@@ -1002,6 +1013,7 @@ def run_gauntlet(
                     repo,
                     profile,
                     layers,
+                    git,
                     binding,
                     f"层 {layer.name} 执行前，",
                 )
@@ -1012,11 +1024,13 @@ def run_gauntlet(
                         repo,
                         runner=runner,
                         repository_lease_token=lease.token,
+                        trusted_uv=trusted_uv,
                         state_guard=lambda command_phase, layer_name=layer.name: (
                             _verify_repository_binding(
                                 repo,
                                 profile,
                                 layers,
+                                git,
                                 binding,
                                 f"层 {layer_name} {command_phase}，",
                             )
@@ -1027,6 +1041,7 @@ def run_gauntlet(
                     repo,
                     profile,
                     layers,
+                    git,
                     binding,
                     f"层 {layer.name} 执行后，",
                 )
@@ -1035,6 +1050,7 @@ def run_gauntlet(
                 repo,
                 profile,
                 layers,
+                git,
                 binding,
                 "最终完成审计时，",
             )
@@ -1043,7 +1059,7 @@ def run_gauntlet(
                 binding=binding,
                 layers=tuple(results),
             )
-    except RepositoryLeaseError as exc:
+    except (RepositoryLeaseError, TrustedToolError) as exc:
         raise GauntletError(str(exc)) from exc
 
 

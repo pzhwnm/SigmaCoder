@@ -16,7 +16,9 @@ import tools.semantic_mutants as semantic_module
 from tools.repo_lease import (
     REPOSITORY_LEASE_FILE,
     REPOSITORY_LEASE_TOKEN_ENV,
+    RepositoryLeaseError,
     acquire_repository_lease,
+    parent_or_standalone_repository_lease,
 )
 from tools.semantic_mutants import (
     HYPOTHESIS_PROFILE,
@@ -337,6 +339,18 @@ def test_repository_parent_lease_is_reentrant_and_unknown_lock_fails_closed(
         _run_fixture(repo, _FakeRunner())
     assert lock.read_text(encoding="utf-8") == "未知残留"
     assert not report.exists()
+
+
+def test_repository_parent_lease_拒绝非_ascii_数字_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _fixture_repo(tmp_path)
+    with acquire_repository_lease(repo, "gauntlet:test") as parent:
+        monkeypatch.setenv(REPOSITORY_LEASE_TOKEN_ENV, "٠" + parent.token[1:])
+        with pytest.raises(RepositoryLeaseError, match="token 格式无效"):
+            with parent_or_standalone_repository_lease(repo, "semantic:test"):
+                pytest.fail("非 ASCII token 不得获得仓库父 lease")
 
 
 def test_atomic_report_collision_never_deletes_unknown_temporary(

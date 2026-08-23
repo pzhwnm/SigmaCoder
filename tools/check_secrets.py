@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -18,8 +19,13 @@ from typing import Final, cast
 
 if __package__:
     from tools import semantic_mutants
+    from tools.trusted_tools import TrustedGit, TrustedToolError
 else:  # pragma: no cover - 由真实脚本入口覆盖
     import semantic_mutants  # type: ignore[import-not-found,no-redef]
+    from trusted_tools import (  # type: ignore[import-not-found,no-redef]
+        TrustedGit,
+        TrustedToolError,
+    )
 
 
 class SecretGateError(RuntimeError):
@@ -63,16 +69,29 @@ EXPECTED_SECRET_PLUGIN_CONFIGS: Final[tuple[ConfigSpec, ...]] = (
     (("name", "TelegramBotTokenDetector"),),
     (("name", "TwilioKeyDetector"),),
 )
-EXPECTED_SECRET_FILTER_CONFIGS: Final[tuple[ConfigSpec, ...]] = (
-    (("path", "detect_secrets.filters.heuristic.is_indirect_reference"),),
-    (("path", "detect_secrets.filters.heuristic.is_likely_id_string"),),
-    (("path", "detect_secrets.filters.heuristic.is_lock_file"),),
-    (("path", "detect_secrets.filters.heuristic.is_not_alphanumeric_string"),),
-    (("path", "detect_secrets.filters.heuristic.is_potential_uuid"),),
-    (("path", "detect_secrets.filters.heuristic.is_prefixed_with_dollar_sign"),),
-    (("path", "detect_secrets.filters.heuristic.is_sequential_string"),),
-    (("path", "detect_secrets.filters.heuristic.is_swagger_file"),),
-    (("path", "detect_secrets.filters.heuristic.is_templated_secret"),),
+EXPECTED_SECRET_FILTER_CONFIGS: Final[tuple[ConfigSpec, ...]] = ()
+DISABLED_SECRET_FILTERS: Final[tuple[str, ...]] = (
+    "detect_secrets.filters.allowlist.is_line_allowlisted",
+    "detect_secrets.filters.heuristic.is_indirect_reference",
+    "detect_secrets.filters.heuristic.is_likely_id_string",
+    "detect_secrets.filters.heuristic.is_lock_file",
+    "detect_secrets.filters.heuristic.is_non_text_file",
+    "detect_secrets.filters.heuristic.is_not_alphanumeric_string",
+    "detect_secrets.filters.heuristic.is_potential_uuid",
+    "detect_secrets.filters.heuristic.is_prefixed_with_dollar_sign",
+    "detect_secrets.filters.heuristic.is_sequential_string",
+    "detect_secrets.filters.heuristic.is_swagger_file",
+    "detect_secrets.filters.heuristic.is_templated_secret",
+)
+# detect-secrets 1.5.0 的多文件 worker 会从不可序列化的 DEFAULT_FILTERS
+# 重建 is_non_text_file；每次只扫描一个显式路径，才能证明该过滤器确实被禁用。
+MAX_SCAN_BATCH_PATHS: Final = 1
+MAX_SCAN_COMMAND_CHARS: Final = 16_000
+MAX_SCAN_FILE_SECONDS: Final = 60.0
+MAX_SCAN_TOTAL_SECONDS: Final = 600.0
+_PASSTHROUGH_ENVIRONMENT_KEYS: Final = (
+    "SystemRoot",
+    "WINDIR",
 )
 _SHA1 = re.compile(r"[0-9a-f]{40}\Z")
 _SEMANTIC_HASH_LINE = re.compile(
@@ -158,28 +177,57 @@ def _require_plain_repository_file(root: Path, relative: PurePosixPath, raw: str
     return candidate
 
 
-def _repository_scan_paths(repo: Path, runner: ScanRunner) -> tuple[str, ...]:
+def _minimal_subprocess_environment(*, scratch: Path | None = None) -> dict[str, str]:
+    """只传递启动系统进程必需的宿主变量，拒绝 Python/Git 注入变量。"""
+
+    environment: dict[str, str] = {}
+    for key in _PASSTHROUGH_ENVIRONMENT_KEYS:
+        value = os.environ.get(key)
+        if value:
+            environment[key] = value
+    environment.update(
+        {
+            "LC_ALL": "C.UTF-8",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONUTF8": "1",
+        }
+    )
+    if scratch is not None:
+        for key in ("TEMP", "TMP", "TMPDIR"):
+            environment[key] = str(scratch)
+    return environment
+
+
+def _repository_scan_paths(
+    repo: Path,
+    git: TrustedGit,
+) -> tuple[str, ...]:
     """从 Git 的 NUL 分隔索引中生成显式、不可注入的扫描路径。"""
 
     try:
-        result = runner(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
+        stdout = git.read(
+            (
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--full-name",
+                "-z",
+                "--",
+            ),
+            label="Git 输入枚举",
             timeout=60,
-            check=False,
         )
-    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-        raise SecretGateError(f"无法枚举 Git 扫描输入：{exc}") from exc
-    if result.returncode != 0:
-        raise SecretGateError(f"Git 输入枚举失败：{result.stderr.strip()}")
-    if not result.stdout or not result.stdout.endswith("\0"):
+        decoded = stdout.decode("utf-8", errors="strict")
+    except (TrustedToolError, UnicodeError) as exc:
+        raise SecretGateError(str(exc)) from exc
+    if not decoded or not decoded.endswith("\0"):
         raise SecretGateError("Git 输入清单为空或不是规范 NUL 分隔格式。")
 
-    raw_paths = result.stdout[:-1].split("\0")
+    raw_paths = decoded[:-1].split("\0")
     if not raw_paths or len(raw_paths) != len(set(raw_paths)):
         raise SecretGateError("Git 输入清单为空或包含重复路径。")
 
@@ -614,39 +662,65 @@ def parse_scan_output(output: str) -> dict[str, list[object]]:
     return normalized
 
 
-def _trusted_detect_secrets_executable() -> Path:
-    suffix = ".exe" if os.name == "nt" else ""
+def _detect_secrets_base_command() -> list[str]:
     interpreter = Path(sys.executable)
-    if not interpreter.is_absolute():
-        raise SecretGateError("Python 解释器路径不是绝对路径，无法定位锁定的 detect-secrets。")
-    candidate = interpreter.with_name(f"detect-secrets{suffix}")
-    try:
-        metadata = os.lstat(candidate)
-        is_junction = candidate.is_junction()
-        resolved = candidate.resolve(strict=True)
-    except OSError as exc:
-        raise SecretGateError("锁定虚拟环境中缺少可核验的 detect-secrets 可执行文件。") from exc
-    if stat.S_ISLNK(metadata.st_mode) or is_junction or not stat.S_ISREG(metadata.st_mode):
-        raise SecretGateError("detect-secrets 可执行文件必须是锁定虚拟环境中的普通非链接文件。")
-    return resolved
-
-
-def _run_detect_secrets(
-    snapshot: Path,
-    scan_paths: Sequence[str],
-    runner: ScanRunner,
-) -> dict[str, list[object]]:
+    if not interpreter.is_absolute() or not interpreter.is_file():
+        raise SecretGateError("Python 解释器不是可核验的绝对文件，无法隔离启动 detect-secrets。")
     command = [
-        str(_trusted_detect_secrets_executable()),
+        str(interpreter),
+        "-I",
+        "-X",
+        "utf8",
+        "-B",
+        "-m",
+        "detect_secrets",
         "scan",
         "--no-verify",
-        "--disable-filter",
-        "detect_secrets.filters.allowlist.is_line_allowlisted",
-        *scan_paths,
     ]
-    environment = os.environ.copy()
-    environment["PYTHONUTF8"] = "1"
-    environment["PYTHONIOENCODING"] = "utf-8"
+    for filter_path in DISABLED_SECRET_FILTERS:
+        command.extend(("--disable-filter", filter_path))
+    return command
+
+
+def _scan_path_batches(
+    base_command: Sequence[str], scan_paths: Sequence[str]
+) -> tuple[tuple[str, ...], ...]:
+    """按路径数和 Windows 命令行长度的保守上限确定性分批。"""
+
+    batches: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for path in scan_paths:
+        candidate = [*base_command, *current, path]
+        exceeds_limit = (
+            len(current) >= MAX_SCAN_BATCH_PATHS
+            or len(subprocess.list2cmdline(candidate)) > MAX_SCAN_COMMAND_CHARS
+        )
+        if exceeds_limit:
+            if not current:
+                raise SecretGateError(f"单个 Git 输入路径超过安全命令行上限：{path!r}。")
+            batches.append(tuple(current))
+            current = []
+            candidate = [*base_command, path]
+            if len(subprocess.list2cmdline(candidate)) > MAX_SCAN_COMMAND_CHARS:
+                raise SecretGateError(f"单个 Git 输入路径超过安全命令行上限：{path!r}。")
+        current.append(path)
+    if current:
+        batches.append(tuple(current))
+    if not batches:
+        raise SecretGateError("Git 输入清单为空，无法分批执行秘密扫描。")
+    return tuple(batches)
+
+
+def _execute_detect_secrets_batch(
+    snapshot: Path,
+    command: Sequence[str],
+    environment: Mapping[str, str],
+    remaining: float,
+    deadline: float,
+    runner: ScanRunner,
+) -> subprocess.CompletedProcess[str]:
+    """执行一个扫描批次，并在读取结果前重新验证全局 deadline。"""
+
     try:
         result = runner(
             command,
@@ -656,27 +730,71 @@ def _run_detect_secrets(
             encoding="utf-8",
             errors="strict",
             env=environment,
-            timeout=300,
+            stdin=subprocess.DEVNULL,
+            shell=False,
+            timeout=min(MAX_SCAN_FILE_SECONDS, remaining),
             check=False,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise SecretGateError(f"无法执行 detect-secrets：{exc}") from exc
+    if time.monotonic() >= deadline:
+        raise SecretGateError("detect-secrets 全局 deadline 已耗尽。")
     if result.returncode != 0:
         raise SecretGateError(
             f"detect-secrets 退出码为 {result.returncode}：{result.stderr.strip()}"
         )
     if result.stderr.strip():
         raise SecretGateError(f"detect-secrets 成功退出但写入诊断：{result.stderr.strip()}")
-    return parse_scan_output(result.stdout)
+    return result
+
+
+def _run_detect_secrets(
+    snapshot: Path,
+    scratch: Path,
+    scan_paths: Sequence[str],
+    runner: ScanRunner,
+) -> dict[str, list[object]]:
+    base_command = _detect_secrets_base_command()
+    batches = _scan_path_batches(base_command, scan_paths)
+    environment = _minimal_subprocess_environment(scratch=scratch)
+    aggregated: dict[str, list[object]] = {}
+    completed_paths: list[str] = []
+    deadline = time.monotonic() + MAX_SCAN_TOTAL_SECONDS
+    for batch in batches:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SecretGateError("detect-secrets 全局 deadline 已耗尽。")
+        command = [*base_command, *batch]
+        result = _execute_detect_secrets_batch(
+            snapshot,
+            command,
+            environment,
+            remaining,
+            deadline,
+            runner,
+        )
+        batch_results = parse_scan_output(result.stdout)
+        overlap = set(aggregated).intersection(batch_results)
+        if overlap:
+            raise SecretGateError("detect-secrets 分批结果返回了重复路径。")
+        aggregated.update(batch_results)
+        completed_paths.extend(batch)
+    if tuple(completed_paths) != tuple(scan_paths):
+        raise SecretGateError("detect-secrets 未完成全部 Git 输入的单文件扫描。")
+    return aggregated
 
 
 def _assert_live_inputs_unchanged(
     repo: Path,
     scan_paths: Sequence[str],
     captured: Mapping[str, bytes],
-    runner: ScanRunner,
+    git: TrustedGit,
 ) -> None:
-    after_paths = _repository_scan_paths(repo, runner)
+    try:
+        git.assert_root()
+    except TrustedToolError as exc:
+        raise SecretGateError(str(exc)) from exc
+    after_paths = _repository_scan_paths(repo, git)
     _assert_live_manifest_membership(repo, after_paths)
     if tuple(scan_paths) != after_paths:
         raise SecretGateError("Git 秘密扫描清单在 staged 扫描期间发生变化。")
@@ -699,8 +817,13 @@ def _evaluate_findings(
         )
     unexpected = observed - expected
     if unexpected:
-        paths = ", ".join(sorted({finding.path for finding in unexpected}))
-        raise SecretGateError(f"发现 {len(unexpected)} 个未获证明的疑似秘密，涉及：{paths}。")
+        locations = ", ".join(
+            sorted(
+                f"{finding.path}:{finding.line_number}:{finding.secret_type}"
+                for finding in unexpected
+            )
+        )
+        raise SecretGateError(f"发现 {len(unexpected)} 个未获证明的疑似秘密，涉及：{locations}。")
     return SecretScanEvidence(
         waived_findings=len(expected),
         manifest_sha256=contract.manifest_sha256 if contract is not None else None,
@@ -713,21 +836,34 @@ def scan_repository(
     runner: ScanRunner = subprocess.run,
 ) -> SecretScanEvidence:
     live_repo = repo.resolve(strict=True)
-    scan_paths = _repository_scan_paths(live_repo, runner)
+    try:
+        git = TrustedGit.open(live_repo, runner=runner)
+    except TrustedToolError as exc:
+        raise SecretGateError(str(exc)) from exc
+    scan_paths = _repository_scan_paths(live_repo, git)
     _assert_live_manifest_membership(live_repo, scan_paths)
     captured = _capture_live_inputs(live_repo, scan_paths)
     try:
         with tempfile.TemporaryDirectory(prefix="sigmacoder-secret-scan-") as temporary:
-            snapshot = Path(temporary).resolve(strict=True)
+            temporary_root = Path(temporary).resolve(strict=True)
+            snapshot = temporary_root / "snapshot"
+            scratch = temporary_root / "scratch"
+            snapshot.mkdir()
+            scratch.mkdir()
             layout: SnapshotLayout | None = None
             try:
                 _write_staged_snapshot(snapshot, captured)
                 layout = _snapshot_layout(snapshot, captured)
                 _seal_staged_snapshot(layout)
                 contract = _build_semantic_waiver_contract(snapshot, scan_paths)
-                results = _run_detect_secrets(snapshot, scan_paths, runner)
+                results = _run_detect_secrets(snapshot, scratch, scan_paths, runner)
                 _assert_staged_snapshot_unchanged(snapshot, captured)
-                _assert_live_inputs_unchanged(live_repo, scan_paths, captured, runner)
+                _assert_live_inputs_unchanged(
+                    live_repo,
+                    scan_paths,
+                    captured,
+                    git,
+                )
                 return _evaluate_findings(results, scan_paths, contract)
             finally:
                 if layout is not None:

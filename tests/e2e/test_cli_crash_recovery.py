@@ -116,17 +116,13 @@ def _prepared_payload(data_root: Path, task_id: str) -> dict[str, object]:
     return value
 
 
-def _wait_for_worktree(workspace: Path) -> None:
+def _wait_for_worktree(repository: GitRepository, workspace: Path) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if workspace.is_dir() and (workspace / ".git").is_file():
-            result = subprocess.run(
-                ["git", "-C", str(workspace), "rev-parse", "HEAD"],
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            result = repository.git_runtime.run(
+                workspace,
+                ("rev-parse", "HEAD"),
                 timeout=10,
             )
             if result.returncode == 0:
@@ -218,7 +214,7 @@ def test_s11_workspace_without_terminal_is_strictly_adopted_after_restart(
     [(task_id, relative)] = _task_rows(data_root)
     workspace = data_root / relative
     if point == "during_git_worktree_add":
-        _wait_for_worktree(workspace)
+        _wait_for_worktree(repository, workspace)
     assert _event_types(data_root, task_id) == [
         "TaskCreatedV1",
         "TaskPreparationStartedV1",

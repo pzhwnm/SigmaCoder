@@ -7,12 +7,13 @@ import os
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.support.isolated_git import FixtureGitRuntime, create_fixture_git_runtime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,20 +23,11 @@ class GitFixture:
     """使用真实 Git CLI 的隔离仓库。"""
 
     path: Path
-    env: Mapping[str, str]
+    git_runtime: FixtureGitRuntime
     first_commit: str
 
     def git(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            ["git", "-C", str(self.path), *arguments],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=dict(self.env),
-            timeout=20,
-        )
+        result = self.git_runtime.run(self.path, arguments, timeout=20)
         if check and result.returncode != 0:
             pytest.fail(
                 f"测试 Git 命令失败：git {' '.join(arguments)}\n{result.stderr}",
@@ -49,30 +41,13 @@ def create_git_fixture(tmp_path: Path) -> GitFixture:
 
     repo = tmp_path / "source-repo"
     repo.mkdir()
-    isolated_global = tmp_path / "isolated.gitconfig"
-    isolated_global.write_text("", encoding="utf-8")
-    env = dict(os.environ)
-    env.update(
-        {
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": str(isolated_global),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_PAGER": "cat",
-            "GIT_OPTIONAL_LOCKS": "0",
-        }
+    git_runtime = create_fixture_git_runtime(
+        tmp_path / "git-control",
+        untrusted_boundary=tmp_path,
     )
-    init = subprocess.run(
-        ["git", "init", "--initial-branch=main", str(repo)],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        timeout=20,
-    )
+    init = git_runtime.init(repo)
     assert init.returncode == 0, init.stderr
-    fixture = GitFixture(repo, env, "")
+    fixture = GitFixture(repo, git_runtime, "")
     fixture.git("config", "user.name", "SigmaCoder Test")
     fixture.git("config", "user.email", "sigmacoder-test@example.invalid")
     (repo / ".gitignore").write_text("*.ignored\n", encoding="utf-8")
@@ -80,7 +55,7 @@ def create_git_fixture(tmp_path: Path) -> GitFixture:
     fixture.git("add", ".gitignore", "tracked.txt")
     fixture.git("commit", "-m", "fixture C1")
     first_commit = fixture.git("rev-parse", "HEAD").stdout.strip()
-    return GitFixture(repo, env, first_commit)
+    return GitFixture(repo, git_runtime, first_commit)
 
 
 def source_fingerprint(repo: GitFixture) -> dict[str, object]:
@@ -247,14 +222,7 @@ def test_explicit_commit_baseline_is_used_even_when_source_branch_is_newer(
     assert task["baseline"]["commit_oid"] == repo.first_commit
     assert repo.git("rev-parse", "HEAD").stdout.strip() != repo.first_commit
     assert (
-        subprocess.run(
-            ["git", "-C", str(workspace), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=20,
-        ).stdout.strip()
+        repo.git_runtime.run(workspace, ("rev-parse", "HEAD"), timeout=20).stdout.strip()
         == repo.first_commit
     )
     assert (workspace / "tracked.txt").read_text(encoding="utf-8") == "来自 C1\n"

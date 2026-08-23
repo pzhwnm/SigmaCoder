@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from tests.support.isolated_git import FixtureGitRuntime, create_fixture_git_runtime
 
 from sigmacoder.adapters.git_workspace import (
     GitWorkspaceAdapter,
@@ -24,19 +23,10 @@ class RepositoryFixture:
     path: Path
     first_commit: str
     second_commit: str
-    env: dict[str, str]
+    git_runtime: FixtureGitRuntime
 
     def git(self, *arguments: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(self.path), *arguments],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=self.env,
-            timeout=20,
-        )
+        result = self.git_runtime.run(self.path, arguments, timeout=20)
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
@@ -44,16 +34,13 @@ class RepositoryFixture:
 def _repository(tmp_path: Path) -> RepositoryFixture:
     path = tmp_path / "source"
     path.mkdir()
-    env = dict(os.environ)
-    env.update(
-        {
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0",
-        }
+    git_runtime = create_fixture_git_runtime(
+        tmp_path / "git-control",
+        untrusted_boundary=tmp_path,
     )
-    fixture = RepositoryFixture(path, "", "", env)
-    fixture.git("init", "--initial-branch=main")
+    initialized = git_runtime.init(path)
+    assert initialized.returncode == 0, initialized.stderr
+    fixture = RepositoryFixture(path, "", "", git_runtime)
     fixture.git("config", "user.name", "SigmaCoder Test")
     fixture.git("config", "user.email", "test@example.invalid")
     (path / ".gitignore").write_text("*.ignored\n", encoding="utf-8")
@@ -65,7 +52,7 @@ def _repository(tmp_path: Path) -> RepositoryFixture:
     fixture.git("add", "tracked.txt")
     fixture.git("commit", "-m", "C2")
     second = fixture.git("rev-parse", "HEAD")
-    return RepositoryFixture(path, first, second, env)
+    return RepositoryFixture(path, first, second, git_runtime)
 
 
 def test_workspace_slot_uses_all_128_nonce_bits(tmp_path: Path) -> None:

@@ -224,13 +224,22 @@ def test_s13_cli_disables_repository_fsmonitor_command(tmp_path: Path) -> None:
     control_environment = dict(repository.environment)
     control_environment.pop("GIT_OPTIONAL_LOCKS", None)
     control = subprocess.run(
-        ["git", "-C", str(repository.path), "status", "--porcelain=v2"],
+        [
+            str(repository.git_runtime.executable),
+            "-C",
+            str(repository.path),
+            "status",
+            "--porcelain=v2",
+        ],
+        cwd=repository.git_runtime.executable.parent,
         check=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=control_environment,
+        stdin=subprocess.DEVNULL,
+        shell=False,
         timeout=30,
     )
     assert control.returncode == 0, control.stderr

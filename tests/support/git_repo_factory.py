@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from referencing import Registry, Resource
+from tests.support.isolated_git import FixtureGitRuntime, create_fixture_git_runtime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_ROOT = PROJECT_ROOT / "schemas" / "cli" / "v1"
@@ -32,6 +33,7 @@ class GitRepository:
     """一个不继承宿主 Git 配置的真实临时仓库。"""
 
     path: Path
+    git_runtime: FixtureGitRuntime
     environment: Mapping[str, str]
     commits: tuple[str, ...]
 
@@ -56,13 +58,25 @@ class GitRepository:
         """执行 argv 形式的真实 Git；测试中禁止 shell 拼接。"""
 
         result = subprocess.run(
-            ["git", "-C", str(self.path), *arguments],
+            [
+                str(self.git_runtime.executable),
+                "--no-pager",
+                "--no-optional-locks",
+                "-c",
+                "core.autocrlf=false",
+                "-C",
+                str(self.path),
+                *arguments,
+            ],
+            cwd=self.git_runtime.executable.parent,
             check=False,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             env=dict(self.environment),
+            stdin=subprocess.DEVNULL,
+            shell=False,
             timeout=timeout,
         )
         if check and result.returncode != 0:
@@ -96,30 +110,14 @@ def create_git_repository(
         raise ValueError("commit_count 必须非负，file_count 必须为正。")
     root.mkdir(parents=True, exist_ok=True)
     repository_path = root / f"source-{seed:08x}"
-    global_config = root / f"global-{seed:08x}.gitconfig"
-    global_config.write_text("", encoding="utf-8")
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": str(global_config),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_PAGER": "cat",
-            "GIT_OPTIONAL_LOCKS": "0",
-        }
+    git_runtime = create_fixture_git_runtime(
+        root / f"git-control-{seed:08x}",
+        untrusted_boundary=root,
     )
-    initialized = subprocess.run(
-        ["git", "init", "--initial-branch=main", str(repository_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=environment,
-        timeout=30,
-    )
+    environment = dict(git_runtime.environment)
+    initialized = git_runtime.init(repository_path)
     assert initialized.returncode == 0, initialized.stderr
-    repository = GitRepository(repository_path, environment, ())
+    repository = GitRepository(repository_path, git_runtime, environment, ())
     repository.git("config", "user.name", f"SigmaCoder Fixture {seed}")
     repository.git("config", "user.email", f"fixture-{seed}@example.invalid")
 
@@ -153,7 +151,7 @@ def create_git_repository(
         repository.git("add", "--all")
         repository.git("commit", "-m", f"fixture seed {seed} revision {revision}")
         commits.append(repository.git("rev-parse", "HEAD").stdout.strip().lower())
-    return GitRepository(repository_path, environment, tuple(commits))
+    return GitRepository(repository_path, git_runtime, environment, tuple(commits))
 
 
 def source_business_snapshot(repository: GitRepository) -> dict[str, object]:

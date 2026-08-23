@@ -10,6 +10,14 @@ import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+if __package__:
+    from tools.trusted_tools import TrustedToolError, resolve_trusted_uv
+else:  # pragma: no cover - 由真实脚本入口覆盖
+    from trusted_tools import (  # type: ignore[import-not-found,no-redef]
+        TrustedToolError,
+        resolve_trusted_uv,
+    )
+
 EXPECTED_PYTHON = "3.12.14"
 EXPECTED_UV = "0.12.5"
 
@@ -61,9 +69,10 @@ def check_toolchain(
     """检查当前进程、uv 可执行文件和仓库元数据。"""
     validate_metadata(repo)
     try:
+        uv_executable = resolve_trusted_uv(repo)
         result = runner(
-            ["uv", "--version"],
-            cwd=repo,
+            [str(uv_executable), "--version"],
+            cwd=uv_executable.parent,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -71,7 +80,7 @@ def check_toolchain(
             timeout=30,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, TrustedToolError) as exc:
         raise ToolchainError(f"无法执行 uv --version：{exc}") from exc
     if result.returncode != 0:
         raise ToolchainError(f"uv --version 退出码为 {result.returncode}：{result.stderr.strip()}")

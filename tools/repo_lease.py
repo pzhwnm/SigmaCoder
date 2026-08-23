@@ -77,7 +77,9 @@ def _lease_problem(lease: RepositoryLease) -> str | None:
 
 
 def _read_reentrant_lease(repo: Path, token: str) -> RepositoryLease:
-    if len(token) != 32 or any(character not in "0123456789abcdef" for character in token):
+    if len(token) != 32 or any(
+        not (("0" <= character <= "9") or ("a" <= character <= "f")) for character in token
+    ):
         raise RepositoryLeaseError("继承的仓库父 lease token 格式无效。")
     path = _managed_lease_path(repo)
     try:

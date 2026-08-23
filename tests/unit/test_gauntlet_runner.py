@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 import threading
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 import tools.gauntlet as gauntlet_module
+from tests.support.isolated_git import (
+    create_fixture_git_runtime,
+    sibling_control_root,
+)
 from tools.check_junit import CORE_PROPERTY_NODEIDS
 from tools.gauntlet import (
     GAUNTLET_LOCK_FILE,
@@ -43,11 +49,17 @@ def create_gauntlet_repo(root: Path) -> None:
         "mutation-reports/\nmutants/\n.coverage*\n.pytest_cache/\nbuild/\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q"], cwd=root, capture_output=True, check=True)
-    subprocess.run(["git", "add", "."], cwd=root, capture_output=True, check=True)
-    subprocess.run(
-        [
-            "git",
+    runtime = create_fixture_git_runtime(
+        sibling_control_root(root),
+        untrusted_boundary=root,
+    )
+    initialized = runtime.init(root)
+    assert initialized.returncode == 0, initialized.stderr
+    added = runtime.run(root, ("add", "."))
+    assert added.returncode == 0, added.stderr
+    committed = runtime.run(
+        root,
+        (
             "-c",
             "user.name=SigmaCoder Tests",
             "-c",
@@ -56,11 +68,9 @@ def create_gauntlet_repo(root: Path) -> None:
             "-q",
             "-m",
             "fixture",
-        ],
-        cwd=root,
-        capture_output=True,
-        check=True,
+        ),
     )
+    assert committed.returncode == 0, committed.stderr
 
 
 def completed(
@@ -488,6 +498,41 @@ def test_windows_profile_完整假执行产生全部结果(tmp_path: Path) -> No
     assert len(result.binding.protected_state_sha256) == 64
 
 
+def test_gauntlet_忽略的仓库内_git_uv_影子不能接管最终证据(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_gauntlet_repo(tmp_path)
+    shadow_names = ("git.exe", "uv.exe") if os.name == "nt" else ("git", "uv")
+    exclude = tmp_path / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text("\n".join(shadow_names) + "\n", encoding="utf-8")
+    for name in shadow_names:
+        shadow = tmp_path / name
+        shutil.copy2(sys.executable, shadow)
+        shadow.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+
+    commands: list[tuple[str, ...]] = []
+
+    def runner(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(tuple(command))
+        executable = Path(command[0])
+        assert executable.is_absolute()
+        assert not executable.is_relative_to(tmp_path)
+        return completed(command)
+
+    result = run_gauntlet(
+        tmp_path,
+        PROFILE_WINDOWS,
+        runner=runner,
+        enforce_platform=False,
+    )
+
+    assert result.binding.git_head
+    assert commands
+
+
 def test_gauntlet_崩溃残留_lease_在任何清理前_fail_closed(tmp_path: Path) -> None:
     create_gauntlet_repo(tmp_path)
     stale = tmp_path / "mutants/sentinel.txt"
@@ -592,15 +637,15 @@ def test_gauntlet_层内_git_head_漂移立即_fail_closed(tmp_path: Path) -> No
         nonlocal changed
         if not changed:
             (tmp_path / "head-drift.txt").write_text("新提交\n", encoding="utf-8")
-            subprocess.run(
-                ["git", "add", "head-drift.txt"],
-                cwd=tmp_path,
-                capture_output=True,
-                check=True,
+            runtime = create_fixture_git_runtime(
+                sibling_control_root(tmp_path),
+                untrusted_boundary=tmp_path,
             )
-            subprocess.run(
-                [
-                    "git",
+            added = runtime.run(tmp_path, ("add", "head-drift.txt"))
+            assert added.returncode == 0, added.stderr
+            committed = runtime.run(
+                tmp_path,
+                (
                     "-c",
                     "user.name=SigmaCoder Tests",
                     "-c",
@@ -609,11 +654,9 @@ def test_gauntlet_层内_git_head_漂移立即_fail_closed(tmp_path: Path) -> No
                     "-q",
                     "-m",
                     "head drift",
-                ],
-                cwd=tmp_path,
-                capture_output=True,
-                check=True,
+                ),
             )
+            assert committed.returncode == 0, committed.stderr
             changed = True
         return completed(command)
 
@@ -621,6 +664,22 @@ def test_gauntlet_层内_git_head_漂移立即_fail_closed(tmp_path: Path) -> No
         run_gauntlet(tmp_path, PROFILE_WINDOWS, runner=runner, enforce_platform=False)
 
     assert not (tmp_path / "mutation-reports" / GAUNTLET_LOCK_FILE).exists()
+
+
+def test_gauntlet_结构化摘要拒绝非_ascii_数字() -> None:
+    assert not gauntlet_module._is_lower_sha256("٠" + "a" * 63)
+
+    payload = {
+        "ok": True,
+        "report_sha256": "a" * 64,
+        "git_head": "٠" + "b" * 39,
+        "mutants": 8,
+    }
+    with pytest.raises(GauntletError, match="semantic mutation checker"):
+        gauntlet_module._validate_json_command_output(
+            ["python", "-m", "tools.check_semantic_report"],
+            json.dumps(payload, ensure_ascii=False),
+        )
 
 
 def test_gauntlet_最终_json_包含_commit_与受保护指纹(
