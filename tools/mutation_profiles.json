@@ -9,9 +9,13 @@
         "tests/unit/test_event_semantics.py",
         "tests/unit/test_projection_checkpoint.py",
         "tests/adversarial/test_corrupt_event_chain.py",
+        "tests/property/test_event_chain_properties.py",
         "tests/property/test_event_generated_properties.py"
       ],
-      "property_test_selection": ["tests/property/test_event_generated_properties.py"],
+      "property_test_selection": [
+        "tests/property/test_event_chain_properties.py",
+        "tests/property/test_event_generated_properties.py"
+      ],
       "timeout_seconds": 1800,
       "timeout_multiplier": 15.0,
       "timeout_constant": 1.0,

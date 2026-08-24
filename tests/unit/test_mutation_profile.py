@@ -46,9 +46,13 @@ EVENT_TEST_SELECTION = (
     "tests/unit/test_event_semantics.py",
     "tests/unit/test_projection_checkpoint.py",
     "tests/adversarial/test_corrupt_event_chain.py",
+    "tests/property/test_event_chain_properties.py",
     "tests/property/test_event_generated_properties.py",
 )
-EVENT_PROPERTY_SELECTION = ("tests/property/test_event_generated_properties.py",)
+EVENT_PROPERTY_SELECTION = (
+    "tests/property/test_event_chain_properties.py",
+    "tests/property/test_event_generated_properties.py",
+)
 TASK_TEST_SELECTION = (
     "tests/unit/test_task_service_branches.py",
     "tests/integration",
@@ -882,3 +886,11 @@ def test_仓库内固定_profile_只引用现存输入(name: str) -> None:
     for relative in (*profile.test_selection, *profile.property_test_selection):
         target = PROJECT_ROOT / relative
         assert target.is_file() or any(target.rglob("test*.py")), f"{relative} 没有可收集测试。"
+
+
+def test_事件mutation_profile_包含完整属性契约矩阵() -> None:
+    profile = load_profile(PROJECT_ROOT / "tools/mutation_profiles.json", "events")
+    contract_matrix = "tests/property/test_event_chain_properties.py"
+
+    assert contract_matrix in profile.test_selection
+    assert contract_matrix in profile.property_test_selection
