@@ -813,6 +813,23 @@ def test_absolute_repository_path_boundaries_fail_closed(value: object) -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        "/fixture/XX.XX/repository",
+        r"C:\fixture\XX.XX\repository",
+    ],
+)
+def test_absolute_repository_path_positive_controls_preserve_bytes(value: str) -> None:
+    actual = as_mapping(
+        EventsApi().restore_task_projection(authorization_events(repository_realpath=value))
+    )
+    projection = as_mapping(actual["projection"])
+    baseline = as_mapping(projection["baseline"])
+
+    assert baseline["repository_realpath"] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         7,
         "tasks/cafe\u0301",
         r"tasks\name",
