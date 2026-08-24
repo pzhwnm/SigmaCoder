@@ -62,8 +62,10 @@ def test_workflow_windows_job_使用短runner临时根() -> None:
     runner_temp = "$" + "{{ runner.temp }}"
 
     assert (
-        "    env:\n"
-        f'      TEMP: "{runner_temp}"\n'
-        f'      TMP: "{runner_temp}"\n'
-        f'      TMPDIR: "{runner_temp}"\n'
+        "      - name: 运行 Windows compatibility 总门\n"
+        "        env:\n"
+        f'          TEMP: "{runner_temp}"\n'
+        f'          TMP: "{runner_temp}"\n'
+        f'          TMPDIR: "{runner_temp}"\n'
+        "        run: uv run --frozen python tools/gauntlet.py --profile windows-compat\n"
     ) in windows_job

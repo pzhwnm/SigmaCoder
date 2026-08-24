@@ -53,10 +53,6 @@ jobs:
     name: Windows compatibility
     runs-on: windows-2025
     timeout-minutes: 120
-    env:
-      TEMP: "${{ runner.temp }}"
-      TMP: "${{ runner.temp }}"
-      TMPDIR: "${{ runner.temp }}"
     steps:
       - name: 检出完整历史
         uses: actions/checkout@v4
@@ -85,4 +81,8 @@ jobs:
         run: uv sync --frozen
 
       - name: 运行 Windows compatibility 总门
+        env:
+          TEMP: "${{ runner.temp }}"
+          TMP: "${{ runner.temp }}"
+          TMPDIR: "${{ runner.temp }}"
         run: uv run --frozen python tools/gauntlet.py --profile windows-compat
