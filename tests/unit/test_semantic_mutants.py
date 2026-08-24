@@ -318,6 +318,19 @@ def test_repository_manifest_is_complete_and_bound_to_current_sources() -> None:
         assert all(selector.startswith("tests/property/") for selector in mutant.selectors)
 
 
+def test_semantic_mutant_sources_are_checked_out_with_lf_bytes() -> None:
+    manifest = load_manifest(PROJECT_ROOT / "tools/semantic_mutants.json")
+    for source in sorted({mutant.source for mutant in manifest.mutants}):
+        result = subprocess.run(
+            ["git", "check-attr", "eol", "--", source],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.strip().endswith(": eol: lf"), source
+
+
 def test_repository_parent_lease_is_reentrant_and_unknown_lock_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
