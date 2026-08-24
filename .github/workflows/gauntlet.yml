@@ -37,9 +37,7 @@ jobs:
           enable-cache: false
 
       - name: 安装精确 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: .python-version
+        run: uv python install 3.12.14
 
       - name: 同步锁定依赖
         run: uv sync --frozen
@@ -73,9 +71,7 @@ jobs:
           enable-cache: false
 
       - name: 安装精确 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: .python-version
+        run: uv python install 3.12.14
 
       - name: 同步锁定依赖
         run: uv sync --frozen
