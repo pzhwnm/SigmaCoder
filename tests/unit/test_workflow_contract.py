@@ -54,3 +54,16 @@ def test_workflow_强制python标准流使用utf8() -> None:
     text = workflow_text()
 
     assert 'env:\n  PYTHONUTF8: "1"\n  PYTHONIOENCODING: "utf-8"\n' in text
+
+
+def test_workflow_windows_job_使用短runner临时根() -> None:
+    text = workflow_text()
+    windows_job = text.split("  windows-compat:\n", maxsplit=1)[1]
+    runner_temp = "$" + "{{ runner.temp }}"
+
+    assert (
+        "    env:\n"
+        f'      TEMP: "{runner_temp}"\n'
+        f'      TMP: "{runner_temp}"\n'
+        f'      TMPDIR: "{runner_temp}"\n'
+    ) in windows_job

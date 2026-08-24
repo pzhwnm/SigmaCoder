@@ -53,6 +53,10 @@ jobs:
     name: Windows compatibility
     runs-on: windows-2025
     timeout-minutes: 120
+    env:
+      TEMP: "${{ runner.temp }}"
+      TMP: "${{ runner.temp }}"
+      TMPDIR: "${{ runner.temp }}"
     steps:
       - name: 检出完整历史
         uses: actions/checkout@v4
