@@ -758,6 +758,56 @@ def test_profile_拒绝各轮枚举出不同_mutant_集合(tmp_path: Path) -> No
     assert not (tmp_path / "mutation-reports/events.json").exists()
 
 
+def test_profile_状态漂移报告轮次摘要与有界差异(tmp_path: Path) -> None:
+    create_inputs(tmp_path)
+    profile = load_profile(write_profile(tmp_path), "events")
+    result_calls = 0
+
+    def runner(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal result_calls
+        if is_mutmut_command(command, "results"):
+            result_calls += 1
+            status = "survived" if result_calls == 3 else "killed"
+            return subprocess.CompletedProcess(command, 0, f"    a: {status}\n", "")
+        return subprocess.CompletedProcess(command, 0, "run ok\n", "")
+
+    with pytest.raises(MutationGateError) as captured:
+        run_profile(tmp_path, profile, runner=runner, require_posix=False)
+
+    message = str(captured.value)
+    assert "完整 mutant 状态集合不一致" in message
+    assert '"kind":"property-only"' in message
+    assert '"run":1' in message
+    assert '"difference_count":1' in message
+    assert '"name":"a"' in message
+    assert '"baseline":"killed"' in message
+    assert '"actual":"survived"' in message
+    assert '"truncated":false' in message
+    assert not (tmp_path / "mutation-reports/events.json").exists()
+
+
+def test_profile_状态漂移诊断最多列出二十项() -> None:
+    baseline = tuple((f"mutant-{index:02d}", "killed") for index in range(25))
+    actual = tuple((name, "survived") for name, _status in baseline)
+
+    diagnostic = mutation_module._status_mismatch_diagnostic(
+        baseline,
+        actual,
+        kind="property-only",
+        run_number=1,
+    )
+    payload = json.loads(diagnostic)
+
+    assert payload["difference_count"] == 25
+    assert payload["truncated"] is True
+    assert len(payload["differences"]) == 20
+    assert [item["name"] for item in payload["differences"]] == [
+        f"mutant-{index:02d}" for index in range(20)
+    ]
+    assert len(payload["baseline_statuses_sha256"]) == 64
+    assert len(payload["actual_statuses_sha256"]) == 64
+
+
 def test_profile_拒绝各轮源码基线指纹变化(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

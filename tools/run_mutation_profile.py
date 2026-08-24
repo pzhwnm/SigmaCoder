@@ -76,6 +76,7 @@ MUTATION_REPORT_CHECKER = "tools/check_mutation_reports.py"
 MUTATION_MANIFEST_MODULE = "tools/mutation_equivalents.py"
 HYPOTHESIS_PROFILE = "default"
 HYPOTHESIS_SEED = 20260823
+STATUS_DIFFERENCE_LIMIT = 20
 PROFILE_CONTRACTS: dict[str, dict[str, object]] = {
     "events": {
         "source_paths": ("src/sigmacoder",),
@@ -546,6 +547,38 @@ def _result_statuses_digest(results: Sequence[Mapping[str, str]]) -> str:
     return _canonical_sha256(list(results))
 
 
+def _status_mismatch_diagnostic(
+    baseline_results: Sequence[tuple[str, str]],
+    actual_results: Sequence[tuple[str, str]],
+    *,
+    kind: str,
+    run_number: int,
+) -> str:
+    """返回有界且机器可读的跨轮状态差异，不把完整清单灌入日志。"""
+
+    baseline = dict(baseline_results)
+    actual = dict(actual_results)
+    differences = [
+        {
+            "name": name,
+            "baseline": baseline.get(name),
+            "actual": actual.get(name),
+        }
+        for name in sorted(set(baseline) | set(actual), key=lambda value: value.encode("utf-8"))
+        if baseline.get(name) != actual.get(name)
+    ]
+    payload = {
+        "actual_statuses_sha256": _result_statuses_digest(_result_items(actual)),
+        "baseline_statuses_sha256": _result_statuses_digest(_result_items(baseline)),
+        "difference_count": len(differences),
+        "differences": differences[:STATUS_DIFFERENCE_LIMIT],
+        "kind": kind,
+        "run": run_number,
+        "truncated": len(differences) > STATUS_DIFFERENCE_LIMIT,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _load_policy(repo: Path, profile: MutationProfile) -> MutationPolicy:
     if profile.name != "events":
         return MutationPolicy(
@@ -930,7 +963,13 @@ def _record_mutation_run(
     ):
         raise MutationGateError("mutation 各次运行前的源码或 Git 状态指纹不一致。")
     if baseline_results is not None and normalized_results != baseline_results:
-        raise MutationGateError("mutation 各次运行的完整 mutant 状态集合不一致。")
+        diagnostic = _status_mismatch_diagnostic(
+            baseline_results,
+            normalized_results,
+            kind=kind,
+            run_number=run_number,
+        )
+        raise MutationGateError(f"mutation 各次运行的完整 mutant 状态集合不一致：{diagnostic}")
     evaluation = evaluate_mutation_results(
         profile.name,
         mutants,

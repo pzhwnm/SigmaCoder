@@ -1245,6 +1245,10 @@ def test_checkpoint_matrix_uses_only_verified_authoritative_prefixes() -> None:
             checkpoint["checkpoint_hash"] = checkpoint_hash_oracle(checkpoint)
         _assert_exact_restore(events, checkpoint=checkpoint)
 
+    checkpoint_with_nonstring_key: dict[object, object] = dict(valid_checkpoint)
+    checkpoint_with_nonstring_key[1] = "非法键"
+    _assert_exact_restore(events, checkpoint=checkpoint_with_nonstring_key)
+
     checkpoint = deepcopy(valid_checkpoint)
     projection_with_nonstring_key: dict[object, object] = dict(as_mapping(checkpoint["projection"]))
     projection_with_nonstring_key[1] = "非法键"
