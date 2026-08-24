@@ -4,17 +4,17 @@
 
 | 字段 | 值 |
 |---|---|
-| SPEC 版本 | r4 |
-| 状态 | 草案，等待人工批准 |
+| SPEC 版本 | r5 |
+| 状态 | 已获人工批准，实施中 |
 | 保证等级 | Tier 3（高保证） |
 | 来源 Ticket | https://github.com/pzhwnm/SigmaCoder/issues/2 |
 | 生成日期 | 2026-08-21 |
-| 实现状态 | setup 因许可证门禁暂停；仅有未运行的 RED 测试草稿，无产品实现 |
-| 批准边界 | 本文件获明确批准前，禁止修改实现代码、安装依赖、创建实现 worktree、提交 Git 或运行实现阶段门禁 |
+| 实现状态 | r4 产品实现与本地测试已完成；r5 正实施等价 mutant 治理并等待同一最终提交的双平台总门 |
+| 批准边界 | r5 已于 2026-08-24 获明确批准；允许实施本文精确范围，但不授权合并或发布 |
 
 批准本 SPEC 表示批准本文定义的行为、失败语义、依赖清单、测试门槛和 setup plan；不表示批准向远程仓库 push、创建 PR、合并或发布。行为或 setup 发生实质变化时，必须在文末追加修订记录并重新获得批准。
 
-建议批准口令：**批准 T01 SPEC r4**。
+批准记录：**批准 T01 SPEC r5 等价 mutant 治理修订**。
 
 ---
 
@@ -414,7 +414,9 @@ T01 不追加 SandboxReady、RunStarted、WorkspaceRevisionCreated 或任何工�
 7. sequence 1 的 previous_hash 固定为 64 个字符 0；
 8. sequence N 的 previous_hash 必须等于 sequence N-1 的 event_hash。
 
-校验顺序固定为：信封 schema 支持性、task_id 一致性、UUIDv4/event_id 唯一性、逻辑 sequence 连续性、previous_hash、重算 event_hash、typed payload、causation、状态转换。发现首个错误即停止该 Task 的重建并返回对应稳定错误。
+校验顺序固定为：信封 schema 支持性、task_id 一致性、UUIDv4/event_id 唯一性、逻辑 sequence 连续性、previous_hash、重算 event_hash、typed payload、causation、状态转换。单一故障输入，以及已经建立唯一、连续逻辑 sequence 后的验证阶段，发现首个错误即停止该 Task 的重建并返回对应稳定错误。
+
+如果同一事件流同时包含两个以上、且在建立唯一逻辑 sequence 前即可独立拒绝的畸形，系统仍必须 fail closed，不得生成投影、checkpoint 或任何持久副作用；但多个适用稳定错误之间的内容级 tie-break 不是公共协议。`_prevalidation_token`、`_fallback_sort_atom` 与 `_prevalidation_order_key` 是私有实现细节，不发布 `PrevalidationOrderV1`，调用方不得依赖其 rank、编码、排序字节或具体首错选择。同一有序输入的判定仍不得依赖墙钟、随机数或外部状态；同一多重畸形集合的不同物理排列，只要求全部进入实际适用的稳定失败集合并保持零副作用。单故障 S09 映射、合法链和已建立逻辑 sequence 后的验证顺序不得因此放宽。
 
 错误映射固定为：event_id 重复→EVENT_ID_DUPLICATE；逻辑 sequence 缺口→EVENT_SEQUENCE_GAP；逻辑 sequence 重复→EVENT_SEQUENCE_DUPLICATE；链错误→EVENT_PREVIOUS_HASH_MISMATCH 或 EVENT_HASH_MISMATCH；typed payload→EVENT_PAYLOAD_INVALID；因果边→EVENT_CAUSATION_INVALID；非法状态转换→EVENT_TRANSITION_INVALID。SQLite 物理行顺序、rowid 和 occurred_at 不定义第三种“乱序”错误；验证器不得因为哈希正确而跳过语义验证。
 
@@ -502,7 +504,7 @@ SQLite 与 Git worktree 无法共享数据库事务。T01 使用先行耐久授�
 | F01 | 可移动 ref 在创建中前移，Task 绑定错误代码 | 在解析与 worktree 创建之间移动 ref | 只使用首次冻结的 commit OID |
 | F02 | 创建 Task 改变用户 worktree、index、HEAD 或 refs | dirty fixture 前后指纹对比 | 用户业务状态逐字节不变；只允许 common-dir worktree 元数据 |
 | F03 | 授权事件、Git worktree 和终态事件之间中断，产生伪健康半成品 | 在前三事件提交前后、Git 创建期间、采纳校验和终态事务边界注入失败 | 纯预检失败无 Task；授权已耐久后 Task 必须可见；仅七项证据全部匹配才采纳，否则不自动删除并进入 NEEDS_ATTENTION |
-| F04 | 事件 sequence 缺失/重复、链篡改或语义次序非法后仍被投影 | 属性生成合法链后逐类破坏；mutation | 稳定错误码、停止重建、不修链；物理存储行顺序不参与语义 |
+| F04 | 事件 sequence 缺失/重复、链篡改或语义次序非法后仍被投影 | 属性生成合法链后逐类破坏；另生成含多个前置畸形的集合；mutation | 单一损坏返回精确稳定错误码；多重前置畸形返回实际适用稳定失败集合之一；两者均停止重建、零投影/checkpoint/写入且不修链；物理存储行顺序不参与语义 |
 | F05 | 坏、跨 Task、超前或陈旧 checkpoint 被当权威 | checkpoint 属性与故障测试 | 事件有效则完整重放；事件无效则拒绝 |
 | F06 | 投影依赖缓存、墙钟、时区或迭代顺序 | 删除投影后由不同 OS 进程重开 | 同一事件链得到规范化一致投影 |
 | F07 | 并发 start 产生重复 ID、共享路径或 SQLite 锁被误报成功 | 多进程压力与多 seed 重复 | 成功 Task 全隔离；失败明确且不污染其他 Task |
@@ -568,7 +570,7 @@ SQLite 与 Git worktree 无法共享数据库事务。T01 使用先行耐久授�
 
 ### S09 — 事件链损坏 fail closed
 
-从合法链执行以下互斥变换并精确断言首个错误：删除中间 sequence→EVENT_SEQUENCE_GAP；复制 sequence→EVENT_SEQUENCE_DUPLICATE；修改 previous_hash→EVENT_PREVIOUS_HASH_MISMATCH；修改 payload、event_type 或 event_hash 但不重算链→EVENT_HASH_MISMATCH。将两个合法事件的类型/内容放到不允许的逻辑 sequence，同时重建 event_id、causation、previous_hash 和 event_hash 使其他校验全部合法时，必须得到 EVENT_TRANSITION_INVALID。仅改变 SQLite 物理插入/返回行顺序、但保留逻辑 sequence 与整条链不变时，读取器按 sequence 得到同一结果，不得报告顺序错误。所有失败均不写新投影、不修补、不跳过事件。
+从合法链执行以下互斥变换并精确断言首个错误：删除中间 sequence→EVENT_SEQUENCE_GAP；复制 sequence→EVENT_SEQUENCE_DUPLICATE；修改 previous_hash→EVENT_PREVIOUS_HASH_MISMATCH；修改 payload、event_type 或 event_hash 但不重算链→EVENT_HASH_MISMATCH。将两个合法事件的类型/内容放到不允许的逻辑 sequence，同时重建 event_id、causation、previous_hash 和 event_hash 使其他校验全部合法时，必须得到 EVENT_TRANSITION_INVALID。另生成同时含两个以上前置畸形的事件集合；其结果必须失败，错误码属于该输入实际适用的稳定失败集合，且不得生成投影、checkpoint 或写入，但不固定这些畸形之间的私有首错 tie-break。仅改变 SQLite 物理插入/返回行顺序、但保留逻辑 sequence 与整条链不变时，读取器按 sequence 得到同一结果，不得报告顺序错误。所有失败均不写新投影、不修补、不跳过事件。
 
 ### S10 — 不兼容事件 schema
 
@@ -643,6 +645,13 @@ SQLite 与 Git worktree 无法共享数据库事务。T01 使用先行耐久授�
 23. 未经明确授权 push、开 PR、合并或发布。
 24. 用非 Trajectory 的 `creation_intent`、临时日志或内存标志替代 WorkspaceProvisioningAuthorized、Prepared、Failed 与 AttentionRequired 事件。
 25. 把 T02 的只读/no-exec profile 升级为 process、terminal、interpreter、edit、网络、凭据或插件执行能力。
+26. 用通配符、前缀、正则、函数级整批排除或其他开放式规则批准 mutation survivor。
+27. 通过 CLI 临时参数、环境变量、普通 profile 配置或运行后脚本追加等价排除。
+28. 把 survivor 改写为 killed，或删除原始 survivor 名称、状态、分类和计数证据。
+29. 把 timeout、no tests、skipped、not checked、suspicious、segfault、caught by type check、interrupted 或未知状态解释为等价 mutant。
+30. 保留已经被测试杀死、已不再生成或未出现在本次完整 mutant 集合中的陈旧清单项。
+31. 在源码、mutmut 版本、uv.lock、mutation profile、mutant 总数或 mutant 名称摘要漂移后沿用旧等价清单。
+32. 为迁就现有测试而把私有 prevalidation tie-break 发布成新的公共协议。
 
 ---
 
@@ -674,7 +683,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 | 分支覆盖硬门 | `uv run python tools/check_coverage.py --input coverage.json --total-branch-min 95 --module-branch src/sigmacoder/domain/events.py=100 --module-branch src/sigmacoder/application/task_service.py=100` | 全产品 branch coverage ≥95%；`events.py` 与 `task_service.py` 各自 branch coverage=100%；任一缺文件、缺 branch 数据或阈值不足均非零退出 |
 | 改动行覆盖 | `uv run diff-cover coverage.xml --compare-branch main --fail-under=100` | changed-line coverage=100%，命令以非零退出实施阈值 |
 | 属性测试 | Hypothesis | 每个核心属性至少 200 个有效例；最终 profile、seed 和 shrink 结果入 EVIDENCE |
-| Mutation/events | `uv run python tools/run_mutation_profile.py events` | 持久 profile 只覆盖事件解析、哈希、typed payload、causation 与 reducer；survivor=0 |
+| Mutation/events | `uv run python tools/run_mutation_profile.py events` | 持久 profile 只覆盖事件解析、哈希、typed payload、causation 与 reducer；原始 survived=49，且必须与 r5 逐项批准清单完全相等；unexpected_non_killed=0 |
 | Mutation/task-service | `uv run python tools/run_mutation_profile.py task-service` | 持久 profile 覆盖创建授权、碰撞、采纳和失败转移；survivor=0 |
 | 顺序/波动 | pytest-randomly | 至少 3 个记录 seed；并发与 kill 场景重复至少 20 次且 0 偶发失败 |
 | 真实执行 | 安装后的 sigma，在临时真实 Git 仓库及独立 OS 进程运行 | S01、S02、S05、S11、S12、S14、S15 全通过 |
@@ -693,6 +702,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 4. 重建幂等：连续两次重建的规范化结果一致。
 5. 合法 task_id、路径、Unicode objective 与 Git object format round-trip 不丢失。
 6. 一个 Task 的事件操作不改变另一 Task 的投影或事件位置。
+7. 对含两个以上前置畸形的事件集合，任意物理排列都 fail closed，错误码属于该输入实际适用的稳定失败集合，且不产生投影、checkpoint 或持久写入；不得借此放宽单故障错误映射。
 
 ### 12.4 Mutation 要求
 
@@ -707,7 +717,73 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 - 接受无效 checkpoint；
 - 把 runtime 恢复字段改为 true。
 
-两个 mutation profile 必须作为版本化配置持久化，显式记录目标路径、测试选择器、timeout、缓存目录和报告路径；不得靠操作者临时输入路径。每个 profile 连续运行两次，第二次不得依赖第一次的幸存/缓存状态，两次均要求 survivor=0。事件链 mutant 还必须单独只运行 property suite，证明属性测试自身能杀死它们。等价 mutant 只能通过 SPEC 修订加入显式排除并附逐项理由，不能运行后静默忽略。工具不可用只能记录 UNAVAILABLE，且 T01 不得完成；不能把手工改代码伪装成 mutmut 通过。
+两个 mutation profile 必须作为版本化配置持久化，显式记录目标路径、测试选择器、timeout、缓存目录和报告路径；不得靠操作者临时输入路径。每个 profile 连续运行两次，第二次不得依赖第一次的幸存/缓存状态。事件链 mutant 还必须单独只运行 property suite。工具不可用只能记录 UNAVAILABLE，且 T01 不得完成；不能把手工改代码伪装成 mutmut 通过。
+
+task-service profile 每次仍要求原始 survivor=0。events profile 的通过条件改为 unexpected_non_killed=0；原始 49 个获批等价项仍必须透明记录为 survived，不得改写成 killed。events 的两次 full run 与一次 property-only run 必须分别满足：枚举 mutant 全集与批准基线完全一致；除 killed 和 survived 外不存在其他状态；实际 survived 名称集合与版本化等价清单逐项完全相等；清单外 survivor、清单内缺失、清单内已 killed、重复名称或其他非 killed 状态均失败。三次运行还必须具有相同 mutant 名称集合、源码指纹和 survivor 集合。
+
+等价清单固定为 `tools/mutation_equivalents.json`，采用封闭 schema v1，不允许未知字段，并至少绑定：manifest id；本文路径与 r5；mutmut 3.7.0；uv.lock 逐字节 SHA-256；events profile 逐字节 SHA-256；预期 mutant 总数 1601；完整 mutant 名称集合 SHA-256；源文件 `src/sigmacoder/domain/events.py`；源文件逐字节 SHA-256 `facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480`。清单必须是仓库内 UTF-8 普通文件，不得为 symlink 或 junction；49 个名称按 UTF-8 字节序排序且不得重复。每项都必须具有完整 name、category、reason_code、非空 reason 以及 source.path、source.function、source.sha256。源码任一字节变化都使相关批准全部失效。
+
+获批类别计数固定为 TYPE_ONLY_CAST=4、OBSERVATIONALLY_EQUIVALENT_RUNTIME=14、GUARD_DOMINATED_EQUIVALENCE=11、NON_CONTRACT_DIAGNOSTIC=6、UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK=14。类别只能取这五个值。所有批准均只适用于状态 survived；listed-but-killed 属于陈旧批准，必须失败并经 SPEC 修订删除，不能被当作更强测试的成功证据。
+
+精确 49 项如下，名称统一加前缀 `sigmacoder.domain.events.`：
+
+| 类别 | mutant 名称 | reason_code |
+|---|---|---|
+| TYPE_ONLY_CAST | x__apply_event__mutmut_105 | CAST_RUNTIME_IDENTITY |
+| TYPE_ONLY_CAST | x__normalized_event_copy__mutmut_2 | CAST_RUNTIME_IDENTITY |
+| TYPE_ONLY_CAST | x__normalized_event_copy__mutmut_6 | CAST_RUNTIME_IDENTITY |
+| TYPE_ONLY_CAST | x__validated_checkpoint_prefix__mutmut_42 | CAST_RUNTIME_IDENTITY |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x_canonical_json_bytes__mutmut_5 | FALSEY_JSON_OPTION_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x_canonical_json_bytes__mutmut_8 | FALSEY_JSON_OPTION_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x_canonical_json_bytes__mutmut_21 | UTF8_CODEC_ALIAS |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__fallback_sort_atom__mutmut_6 | FALSEY_JSON_OPTION_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__fallback_sort_atom__mutmut_7 | FALSEY_JSON_OPTION_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__fallback_sort_atom__mutmut_10 | SCALAR_SORT_KEYS_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__fallback_sort_atom__mutmut_12 | SCALAR_SORT_KEYS_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__is_portable_relative_path__mutmut_28 | FIRST_SPLIT_COMPONENT_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__is_portable_relative_path__mutmut_31 | FIRST_SPLIT_COMPONENT_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__prevalidation_token__mutmut_6 | UTF8_CODEC_ALIAS |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__prevalidation_token__mutmut_15 | UTF8_CODEC_ALIAS |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__prevalidation_order_key__mutmut_4 | PRESERVED_PARTITION_ORDER |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__prevalidation_order_key__mutmut_5 | COMMON_SECONDARY_KEY_EQUIVALENCE |
+| OBSERVATIONALLY_EQUIVALENT_RUNTIME | x__prevalidation_order_key__mutmut_14 | COMMON_SECONDARY_KEY_EQUIVALENCE |
+| GUARD_DOMINATED_EQUIVALENCE | x_canonical_json_bytes__mutmut_13 | RESTRICTED_JSON_GUARD_DOMINATES |
+| GUARD_DOMINATED_EQUIVALENCE | x_canonical_json_bytes__mutmut_18 | RESTRICTED_JSON_GUARD_DOMINATES |
+| GUARD_DOMINATED_EQUIVALENCE | x__is_oid__mutmut_2 | OID_SCHEMA_GUARD_DOMINATES |
+| GUARD_DOMINATED_EQUIVALENCE | x__is_portable_relative_path__mutmut_5 | PORTABLE_PATH_GUARDS_DOMINATE |
+| GUARD_DOMINATED_EQUIVALENCE | x__is_portable_relative_path__mutmut_13 | PORTABLE_PATH_GUARDS_DOMINATE |
+| GUARD_DOMINATED_EQUIVALENCE | x__is_portable_relative_path__mutmut_37 | PORTABLE_PATH_GUARDS_DOMINATE |
+| GUARD_DOMINATED_EQUIVALENCE | x__is_uuid4__mutmut_1 | UUID_SCHEMA_GUARDS_DOMINATE |
+| GUARD_DOMINATED_EQUIVALENCE | x__oid_matches_object_format__mutmut_10 | OID_SCHEMA_GUARD_DOMINATES |
+| GUARD_DOMINATED_EQUIVALENCE | x__oid_matches_object_format__mutmut_21 | OBJECT_FORMAT_GUARD_DOMINATES |
+| GUARD_DOMINATED_EQUIVALENCE | x__validated_checkpoint_prefix__mutmut_55 | PROJECTION_COMPARISON_DOMINATES |
+| GUARD_DOMINATED_EQUIVALENCE | x_restore_task_projection__mutmut_43 | VALIDATED_CHAIN_IDENTITY |
+| NON_CONTRACT_DIAGNOSTIC | x__event_int__mutmut_4 | PRIVATE_DIAGNOSTIC_ONLY |
+| NON_CONTRACT_DIAGNOSTIC | x__event_payload__mutmut_5 | PRIVATE_DIAGNOSTIC_ONLY |
+| NON_CONTRACT_DIAGNOSTIC | x__event_payload__mutmut_6 | PRIVATE_DIAGNOSTIC_ONLY |
+| NON_CONTRACT_DIAGNOSTIC | x__event_payload__mutmut_7 | PRIVATE_DIAGNOSTIC_ONLY |
+| NON_CONTRACT_DIAGNOSTIC | x__event_text__mutmut_3 | PRIVATE_DIAGNOSTIC_ONLY |
+| NON_CONTRACT_DIAGNOSTIC | x__fallback_sort_atom__mutmut_14 | PRIVATE_DIAGNOSTIC_ONLY |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__fallback_sort_atom__mutmut_1 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__fallback_sort_atom__mutmut_3 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__fallback_sort_atom__mutmut_5 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__fallback_sort_atom__mutmut_9 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__fallback_sort_atom__mutmut_11 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_token__mutmut_1 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_token__mutmut_4 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_token__mutmut_9 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_token__mutmut_10 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_token__mutmut_13 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_order_key__mutmut_1 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_order_key__mutmut_2 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_order_key__mutmut_12 | PRIVATE_MULTI_FAULT_ORDER |
+| UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK | x__prevalidation_order_key__mutmut_13 | PRIVATE_MULTI_FAULT_ORDER |
+
+每项的非空中文 reason 必须说明其具体运行期等价、支配性 guard、非契约诊断或多故障私有 tie-break 理由，不能只复述类别名称。manifest、runner、独立 checker 均进入 repository fingerprint 和最终 mutation 报告。
+
+`run_mutation_profile.py` 必须先完整解析原始状态，再加载并严格验证 manifest，最后做集合判定；不得在 parser 中遇到 survivor 就提前抛错。报告升级为 schema v2，透明包含 raw.total、raw.killed、raw.survived，approved_equivalents.count/names/digest，unexpected_non_killed.count/names/statuses，manifest、source、profile、lock、runner、checker 的指纹以及 gate_passed。不得只报告“有效 survivor=0”而隐藏原始 49 项。
+
+新增独立 `tools/check_mutation_equivalents.py`；它不得复用 runner 的集合判定函数，必须独立验证 manifest 的封闭 schema、49 个精确名称、类别计数、版本与指纹，以及每次 run 的完整 status map、名称摘要、原始 survivor、获批等价项和 unexpected 三个集合。`tools/check_mutation_reports.py` 必须拒绝 schema v1、陈旧报告、缺字段、额外字段、重复项、篡改计数或指纹。manifest 与 checker 必须加入 runner 的 protected paths，写报告前后均重新核验。
 
 ### 12.5 对抗性 fixtures
 
@@ -738,6 +814,14 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 8. 删除或污染旧报告后，gauntlet 不得读取旧 PASS；
 9. 对 source-state 依次制造 relevant staged、unstaged modified、deleted 和非忽略 untracked 四种状态，每一种都必须使 `source_state.py` 非零退出并给出对应稳定分类；负控之间必须完整恢复状态，避免后一类借用前一类失败；
 10. 向许可证 fixture 注入 unknown/custom SPDX，并向审计 fixture 注入一条发现，两种供应链检查都必须非零退出。
+11. 对等价清单分别删除真实 survivor、增加不存在或拼错名称、增加 killed mutant、把已列项变成 killed；每种情况均必须失败。
+12. 把已列项状态依次伪造为 timeout、no tests、skipped、not checked、suspicious、segfault、caught by type check、interrupted 或未知值；每种情况均必须失败。
+13. 分别漂移 events.py 一个字节、mutmut 版本、uv.lock、profile、预期总数和名称摘要；每种情况均必须失败。
+14. 对清单注入重复名、未知类别、空 reason、通配符、正则、未知字段或错误类别计数；每种情况均必须失败。
+15. 删除清单、替换为 symlink/junction 或在 runner 运行中改写清单；每种情况均必须失败。
+16. 篡改 schema v2 报告中的 raw survivor 数、名称、manifest/source/profile/lock/runner/checker 指纹，或用 schema v1/旧报告替换；独立 checker 必须失败。
+17. 使 property-only 多出任一 survivor；门禁必须失败。
+18. 对 tie-break 类注入“畸形流被接受”“产生投影/checkpoint/写入”“合法链结果改变”或“单故障错误映射改变”；均必须失败，不能被清单豁免。
 
 完成负控后必须恢复源状态，并重新运行完整新鲜 Gauntlet。
 
@@ -746,7 +830,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 - Ubuntu 运行 `uv run python tools/gauntlet.py --profile ubuntu-tier3`，必须执行本节全部层，包括两个真实 mutmut profile、Git 对抗、真实跨进程、coverage、供应链与所有负控；任何 UNAVAILABLE、skip 或 substitute 都不是通过。
 - Windows 运行 `uv run python tools/gauntlet.py --profile windows-compat`，必须执行除 mutmut 之外的全部适用层，并重点覆盖路径大小写、盘符、junction、文件锁、Git linked-worktree、SQLite/WAL 和真实多进程；mutmut 只能由同一最终 commit 的 Ubuntu 证据满足，Windows 报告不得伪造 mutation PASS。
 - `uv run python tools/gauntlet.py` 是当前平台 profile 的 fail-closed dispatcher，但单个平台 PASS 不等于 T01 完成。
-- 总判定必须同时引用同一最终 commit、同一 lock hash 和同一 SPEC r4 的 Ubuntu Tier 3 PASS 与 Windows compatibility PASS。任一平台未运行、commit 不同或报告陈旧，T01 状态只能是未完成。
+- 总判定必须同时引用同一最终 commit、同一 lock hash 和同一 SPEC r5 的 Ubuntu Tier 3 PASS 与 Windows compatibility PASS。任一平台未运行、commit 不同或报告陈旧，T01 状态只能是未完成。
 - 若尚未获得 push/CI 授权且本地没有可信 Ubuntu runner，Ubuntu 证据记为 UNAVAILABLE 并暂停完成声明；不得以 Windows 结果替代。
 
 ---
@@ -799,7 +883,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 
 - CPython 精确固定为 3.12.14，`.python-version` 必须只声明 `3.12.14`；禁止“最新 3.12.x”、范围内自动漂移或使用当前 3.12.4 生成 lock/证据。
 - uv 精确固定为 0.12.5，并在 pyproject 的 `tool.uv.required-version` 使用 `==0.12.5`；禁止使用当前 0.6.9 或其他版本生成 lock/证据。
-- SPEC r4 获批后，setup 必须验证按 r3 批准范围安装的 CPython 3.12.14 与 uv 0.12.5；若精确工具链不存在，须重新发起仅限这两个精确版本的网络/主机写权限请求。安装或解析结果不精确匹配时停止，不得自动改选版本。
+- SPEC r5 获批后，setup 必须验证按 r3 批准范围安装的 CPython 3.12.14 与 uv 0.12.5；若精确工具链不存在，须重新发起仅限这两个精确版本的网络/主机写权限请求。安装或解析结果不精确匹配时停止，不得自动改选版本。
 - setup、Gauntlet 与 CI 首步分别验证 `python --version` 精确为 3.12.14、`uv --version` 精确为 0.12.5；任一不同立即失败。升级任一工具必须先修订本 SPEC 和 lock 证据。
 - pyproject.toml 声明 requires-python 大于等于 3.12 且小于 3.13。
 - 所有 Python 包通过 uv.lock 锁定精确版本与哈希。
@@ -869,6 +953,8 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
     tools/check_licenses.py
     tools/run_mutation_profile.py
     tools/mutation_profiles.json
+    tools/mutation_equivalents.json
+    tools/check_mutation_equivalents.py
     tools/source_state.py
     .github/workflows/gauntlet.yml
 
@@ -947,7 +1033,7 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 2. GitHub Issue #2 的六条验收标准逐条映射到测试证据。
 3. 同一最终候选 commit 与 lock hash 上，Ubuntu `ubuntu-tier3`（含两个 mutation profile）和 Windows `windows-compat` 均新鲜运行并通过。
 4. 所有自定义门禁的 fail-closed 负控通过。
-5. 两个持久 mutation profile、属性、真实跨进程、并发和对抗层均有原始输出或内容哈希引用；两个 profile 各连续两次 survivor=0。
+5. 两个持久 mutation profile、属性、真实跨进程、并发和对抗层均有原始输出或内容哈希引用；task-service 两次原始 survivor=0；events 两次 full run 与一次 property-only run 均透明记录原始 survived=49，逐项等于 r5 清单，且 unexpected_non_killed=0；独立 checker 通过。
 6. changed-line coverage=100%，全产品 branch coverage≥95%，`events.py` 与 `task_service.py` 各自 branch coverage=100%，且三个覆盖率硬门的独立负控均有证据。
 7. 锁文件一致；pip-audit 无发现或存在单独获批且未过期的 SPEC 豁免；全部直接/传递依赖 SPDX 均在精确 allowlist 内。
 8. 原用户 worktree 零业务改动有前后指纹证据。
@@ -973,3 +1059,4 @@ gauntlet 使用固定、版本化层清单；每层必须产生可解析结果�
 - **r2 — 2026-08-21**：最终阻断修订：工具链精确锁定 CPython 3.12.14 与 uv 0.12.5，并保留旧版本仅作现状观测；恢复顺序改为先完整事件与语义校验、再投影、再识别授权和检查文件系统；TaskViewV1 用条件 oneOf 固定 AVAILABLE、NOT_CREATED、UNVERIFIED、MISSING 与 BASELINE_MISMATCH；删除不可由逻辑 sequence 证明的物理乱序错误码，并为 S09 固定每类变换的错误映射。状态：等待人工批准，r1 已被本版取代。
 - **r3 — 2026-08-21**：修正文内版本绑定，将双平台总判定、工具链规范和批准后 setup 全部绑定当前 SPEC r3，避免执行证据继续引用旧版。状态：等待人工批准，r2 已被本版取代。
 - **r4 — 2026-08-21**：r3 获人工批准后，首次真实锁定解析发现 `diff-cover 10.5.1` 必然引入 0BSD 的 `chardet 7.6.0`，触发 r3 的白名单外许可证硬阻断；本版显式把 0BSD 纳入精确 allowlist，并把漏洞审计改为从 `uv.lock` 导出全部第三方依赖后审计，以排除本地 editable 项目造成的伪失败，同时让许可证清单排除第一方 `sigmacoder`。状态：等待人工批准；在批准前暂停后续 RED 运行与产品实现，r3 已被本版取代。
+- **r5 — 2026-08-24**：r4 产品实现与本地门禁完成后，新鲜 Ubuntu mutation 证据稳定产生 49 个未被现有测试区分的 survivor。本版收窄多重前置畸形的首错契约，逐项批准精确 49 项及五类理由，新增源码/lock/profile/mutmut/全集摘要绑定的封闭等价清单、schema v2 原始报告、独立 checker 和陈旧批准负控；原始 survived=49 必须透明保留，只有 approved_equivalents=49 且 unexpected_non_killed=0 才可通过。状态：2026-08-24 已获人工批准，实施中；不授权合并或发布，r4 已被本版取代。
