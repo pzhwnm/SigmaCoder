@@ -44,6 +44,17 @@ def create_gauntlet_repo(root: Path) -> None:
     profiles = root / "tools/mutation_profiles.json"
     profiles.parent.mkdir()
     profiles.write_text('{"schema_version":1,"profiles":{}}\n', encoding="utf-8")
+    protected_r5_files = (
+        "docs/specs/T01-persistent-coding-task.md",
+        "tools/mutation_equivalents.json",
+        "tools/run_mutation_profile.py",
+        "tools/check_mutation_equivalents.py",
+        "tools/check_mutation_reports.py",
+    )
+    for relative in protected_r5_files:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"fixture: {relative}\n", encoding="utf-8")
     (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (root / ".gitignore").write_text(
         "mutation-reports/\nmutants/\n.coverage*\n.pytest_cache/\nbuild/\n",
@@ -71,6 +82,56 @@ def create_gauntlet_repo(root: Path) -> None:
         ),
     )
     assert committed.returncode == 0, committed.stderr
+
+
+def valid_equivalence_checker_payload() -> dict[str, object]:
+    return {
+        "ok": True,
+        "schema_version": 1,
+        "manifest_id": "T01-events-equivalent-mutants-v1",
+        "manifest_sha256": "c" * 64,
+        "approved_equivalents": 49,
+        "approved_names_sha256": "".join(
+            (
+                "3efbac39",
+                "32d88e1a",
+                "6d063d8b",
+                "4752399b",
+                "6d1b8c86",
+                "769f34c7",
+                "cce0548f",
+                "2b4cf7e5",
+            )
+        ),
+    }
+
+
+def valid_mutation_report_payload() -> dict[str, object]:
+    return {
+        "ok": True,
+        "schema_version": 2,
+        "spec_version": "r5",
+        "manifest_sha256": "c" * 64,
+        "approved_equivalents": 49,
+        "reports": {
+            "events": {
+                "report_sha256": "d" * 64,
+                "git_head": "b" * 40,
+                "mutants": 1601,
+                "raw_survived": 49,
+                "approved_equivalents": 49,
+                "unexpected_non_killed": 0,
+            },
+            "task-service": {
+                "report_sha256": "e" * 64,
+                "git_head": "b" * 40,
+                "mutants": 17,
+                "raw_survived": 0,
+                "approved_equivalents": 0,
+                "unexpected_non_killed": 0,
+            },
+        },
+    }
 
 
 def completed(
@@ -116,6 +177,10 @@ def completed(
                     "shrink": "NOT_APPLICABLE",
                 }
             stdout = json.dumps(payload)
+        elif "tools.check_mutation_equivalents" in command:
+            stdout = json.dumps(valid_equivalence_checker_payload())
+        elif "tools.check_mutation_reports" in command:
+            stdout = json.dumps(valid_mutation_report_payload())
         elif "tools.check_semantic_report" in command:
             stdout = json.dumps(
                 {
@@ -142,6 +207,14 @@ def test_ubuntu_固定运行语义变异并在最终状态审计全部报告() -
         ("uv", "run", "--frozen", "python", "-m", "tools.check_semantic_report"),
     )
     source_state = next(item for item in layers if item.name == "source-state")
+    assert source_state.commands[-3] == (
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "-m",
+        "tools.check_mutation_equivalents",
+    )
     assert source_state.commands[-2] == (
         "uv",
         "run",
@@ -224,6 +297,11 @@ def test_gauntlet_meta_tests_只引用仓库内现存测试() -> None:
         if argument.startswith("tests/")
     ]
     assert selected, "Gauntlet 必须显式选择元测试。"
+    assert {
+        "tests/unit/test_mutation_equivalents.py",
+        "tests/unit/test_mutation_reports_r5.py",
+        "tests/unit/test_mutation_runner_r5.py",
+    } <= set(selected)
     for relative in selected:
         target = repo / relative
         assert target.exists()
@@ -267,31 +345,120 @@ def test_整层允许单条命令静默但要求至少一条有输出(tmp_path: 
     assert result.commands == 2
 
 
-def test_mutation_checker_要求可解析且精确的_json_契约(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "case",
+    ["schema", "manifest-id", "count", "count-bool", "names-digest", "manifest", "extra"],
+)
+def test_等价_mutant_checker_要求精确_49_项契约(tmp_path: Path, case: str) -> None:
+    command = (
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "-m",
+        "tools.check_mutation_equivalents",
+    )
+    layer = Layer(name="source-state", commands=(command,))
+    payload = valid_equivalence_checker_payload()
+    if case == "schema":
+        payload["schema_version"] = 2
+    elif case == "manifest-id":
+        payload["manifest_id"] = "other"
+    elif case == "count":
+        payload["approved_equivalents"] = 48
+    elif case == "count-bool":
+        payload["approved_equivalents"] = True
+    elif case == "names-digest":
+        payload["approved_names_sha256"] = "0" * 64
+    elif case == "manifest":
+        payload["manifest_sha256"] = "x" * 64
+    else:
+        payload["silent_exclusions"] = []
+
+    def runner(invoked: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return completed(invoked, stdout=json.dumps(payload))
+
+    with pytest.raises(GauntletError, match="等价 mutant checker"):
+        run_layer(layer, tmp_path, runner=runner)
+
+
+def test_等价_mutant_checker_接受精确_r5_证据(tmp_path: Path) -> None:
+    command = ("uv", "run", "--frozen", "python", "-m", "tools.check_mutation_equivalents")
+    result = run_layer(
+        Layer(name="source-state", commands=(command,)),
+        tmp_path,
+        runner=lambda invoked, **kwargs: completed(invoked),
+    )
+    assert result.commands == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("schema_version",), 1),
+        (("spec_version",), "r4"),
+        (("reports", "events", "raw_survived"), 0),
+        (("reports", "events", "approved_equivalents"), 48),
+        (("reports", "events", "unexpected_non_killed"), 1),
+        (("reports", "task-service", "raw_survived"), 1),
+        (("reports", "events", "mutants"), True),
+        (("reports", "events", "report_sha256"), "x" * 64),
+        (("reports", "task-service", "git_head"), "a" * 40),
+        (("silent_exclusions",), []),
+    ],
+)
+def test_mutation_checker_拒绝弱化或不一致的_r5_json_契约(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: object,
+) -> None:
+    command = ("uv", "run", "--frozen", "python", "-m", "tools.check_mutation_reports")
+    layer = Layer(name="source-state", commands=(command,))
+    payload = valid_mutation_report_payload()
+    target = payload
+    for segment in path[:-1]:
+        nested = target[segment]
+        assert isinstance(nested, dict)
+        target = nested
+    target[path[-1]] = replacement
+
+    def invalid(invoked: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return completed(invoked, stdout=json.dumps(payload))
+
+    with pytest.raises(GauntletError, match="mutation"):
+        run_layer(layer, tmp_path, runner=invalid)
+
+
+def test_mutation_checker_要求可解析且接受精确_r5_json(tmp_path: Path) -> None:
     command = ("uv", "run", "--frozen", "python", "-m", "tools.check_mutation_reports")
     layer = Layer(name="source-state", commands=(command,))
 
-    def invalid_json(invoked: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        return completed(invoked, stdout="not-json\n")
-
     with pytest.raises(GauntletError, match="未输出有效 JSON"):
-        run_layer(layer, tmp_path, runner=invalid_json)
+        run_layer(
+            layer,
+            tmp_path,
+            runner=lambda invoked, **kwargs: completed(invoked, stdout="not-json\n"),
+        )
 
-    def non_hex_digest(
-        invoked: Sequence[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        payload = {"ok": True, "reports": {"events": "x" * 64, "task-service": "0" * 64}}
-        return completed(invoked, stdout=json.dumps(payload))
-
-    with pytest.raises(GauntletError, match="未证明两份有效报告"):
-        run_layer(layer, tmp_path, runner=non_hex_digest)
-
-    def valid_json(invoked: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        payload = {"ok": True, "reports": {"events": "a" * 64, "task-service": "0" * 64}}
-        return completed(invoked, stdout=json.dumps(payload))
-
-    result = run_layer(layer, tmp_path, runner=valid_json)
+    result = run_layer(layer, tmp_path, runner=lambda invoked, **kwargs: completed(invoked))
     assert result.commands == 1
+
+
+def test_source_state_两个_mutation_checker_必须绑定同一_manifest(tmp_path: Path) -> None:
+    commands = (
+        ("uv", "run", "--frozen", "python", "-m", "tools.check_mutation_equivalents"),
+        ("uv", "run", "--frozen", "python", "-m", "tools.check_mutation_reports"),
+    )
+
+    def runner(invoked: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "tools.check_mutation_equivalents" in invoked:
+            return completed(invoked)
+        payload = valid_mutation_report_payload()
+        payload["manifest_sha256"] = "f" * 64
+        return completed(invoked, stdout=json.dumps(payload))
+
+    with pytest.raises(GauntletError, match="同一 manifest"):
+        run_layer(Layer(name="source-state", commands=commands), tmp_path, runner=runner)
 
 
 def test_semantic_checker_要求八类报告且拒绝_bool_冒充整数(tmp_path: Path) -> None:
@@ -629,6 +796,41 @@ def test_gauntlet_层内源码漂移立即_fail_closed(tmp_path: Path) -> None:
     assert not (tmp_path / "mutation-reports" / GAUNTLET_LOCK_FILE).exists()
 
 
+@pytest.mark.parametrize(
+    ("relative", "binding_field"),
+    [
+        ("docs/specs/T01-persistent-coding-task.md", "spec_sha256"),
+        ("tools/mutation_equivalents.json", "mutation_equivalents_sha256"),
+        ("tools/run_mutation_profile.py", "mutation_runner_sha256"),
+        (
+            "tools/check_mutation_equivalents.py",
+            "mutation_equivalence_checker_sha256",
+        ),
+        ("tools/check_mutation_reports.py", "mutation_report_checker_sha256"),
+    ],
+)
+def test_gauntlet_r5_信任根逐文件漂移立即_fail_closed(
+    tmp_path: Path,
+    relative: str,
+    binding_field: str,
+) -> None:
+    create_gauntlet_repo(tmp_path)
+    changed = False
+
+    def runner(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal changed
+        if not changed:
+            target = tmp_path / relative
+            target.write_text(target.read_text(encoding="utf-8") + "漂移\n", encoding="utf-8")
+            changed = True
+        return completed(command)
+
+    with pytest.raises(GauntletError, match=binding_field):
+        run_gauntlet(tmp_path, PROFILE_WINDOWS, runner=runner, enforce_platform=False)
+
+    assert not (tmp_path / "mutation-reports" / GAUNTLET_LOCK_FILE).exists()
+
+
 def test_gauntlet_层内_git_head_漂移立即_fail_closed(tmp_path: Path) -> None:
     create_gauntlet_repo(tmp_path)
     changed = False
@@ -695,6 +897,11 @@ def test_gauntlet_最终_json_包含_commit_与受保护指纹(
         uv_lock_sha256="d" * 64,
         profile_manifest_sha256="e" * 64,
         mutation_profiles_sha256="f" * 64,
+        spec_sha256="1" * 64,
+        mutation_equivalents_sha256="2" * 64,
+        mutation_runner_sha256="3" * 64,
+        mutation_equivalence_checker_sha256="4" * 64,
+        mutation_report_checker_sha256="5" * 64,
         protected_state_sha256="0" * 64,
     )
     result = GauntletRunResult(
@@ -706,8 +913,17 @@ def test_gauntlet_最终_json_包含_commit_与受保护指纹(
 
     assert gauntlet_module.main(["--repo", str(tmp_path), "--profile", PROFILE_WINDOWS]) == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["spec_version"] == "r5"
     assert payload["binding"]["git_head"] == "a" * 40
     assert payload["binding"]["protected_state_sha256"] == "0" * 64
+    for field in (
+        "spec_sha256",
+        "mutation_equivalents_sha256",
+        "mutation_runner_sha256",
+        "mutation_equivalence_checker_sha256",
+        "mutation_report_checker_sha256",
+    ):
+        assert gauntlet_module._is_lower_sha256(payload["binding"][field])
 
 
 def test_平台_profile_不允许互换(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+import tools.check_mutation_reports as report_checker_module
 import tools.run_mutation_profile as mutation_module
 from mutmut.configuration import _load_config
 from tests.support.isolated_git import (
@@ -34,6 +35,7 @@ from tools.run_mutation_profile import (
     KNOWN_STATUSES,
     MUTATION_LOCK_FILE,
     MutationGateError,
+    MutationPolicy,
     load_profile,
     parse_mutmut_results,
     run_profile,
@@ -58,6 +60,43 @@ TASK_TEST_SELECTION = (
     "tests/integration",
     "tests/e2e",
 )
+
+
+@pytest.fixture(autouse=True)
+def _inject_fixture_mutation_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """临时仓库显式注入零豁免策略；产品路径仍必须加载 r5 manifest。"""
+
+    policy = MutationPolicy(
+        manifest=None,
+        manifest_sha256="0" * 64,
+        expected_mutant_count=None,
+        expected_mutant_names_sha256=None,
+        approved_names=(),
+    )
+    monkeypatch.setattr(mutation_module, "_load_policy", lambda _repo, _profile: policy)
+
+    def bindings(
+        repo: Path,
+        _profile: object,
+        _policy: object,
+        source_fingerprint: str,
+    ) -> dict[str, str]:
+        return {
+            "git_head": mutation_module._git_head(repo).decode("ascii"),
+            "spec_version": "r5",
+            "spec_sha256": "1" * 64,
+            "mutmut_version": "3.7.0",
+            "uv_lock_sha256": mutation_module._file_digest(repo / "uv.lock", "uv.lock"),
+            "profile_sha256": "2" * 64,
+            "source_fingerprint": source_fingerprint,
+            "source_sha256": "3" * 64,
+            "manifest_sha256": "0" * 64,
+            "runner_sha256": "4" * 64,
+            "checker_sha256": "5" * 64,
+            "report_checker_sha256": "6" * 64,
+        }
+
+    monkeypatch.setattr(mutation_module, "_report_bindings", bindings)
 
 
 def write_profile(
@@ -177,22 +216,79 @@ def run_successful_events_profile(
     return profile, report, config
 
 
-def test_mutmut_results_只接受非空且全部_killed() -> None:
+def test_profile_先解析原始状态再加载_manifest_最后判定(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace: list[str] = []
+    original_parser = mutation_module.parse_mutmut_results
+    policy = MutationPolicy(
+        manifest=None,
+        manifest_sha256="0" * 64,
+        expected_mutant_count=None,
+        expected_mutant_names_sha256=None,
+        approved_names=(),
+    )
+
+    def parser(output: str) -> dict[str, str]:
+        trace.append("parse-raw")
+        return original_parser(output)
+
+    def load_policy(_repo: Path, _profile: object) -> MutationPolicy:
+        trace.append("load-manifest")
+        return policy
+
+    monkeypatch.setattr(mutation_module, "parse_mutmut_results", parser)
+    monkeypatch.setattr(mutation_module, "_load_policy", load_policy)
+
+    run_successful_events_profile(tmp_path)
+
+    assert trace[:2] == ["parse-raw", "load-manifest"]
+    assert trace.count("load-manifest") == 1
+    assert trace.count("parse-raw") == 3
+
+
+def test_runner_与独立_checker_仓库指纹算法交叉兼容(tmp_path: Path) -> None:
+    create_inputs(tmp_path)
+    profile = load_profile(write_profile(tmp_path), "events")
+    profile_payload = report_checker_module._profile_payload(profile)
+
+    runner_before = mutation_module._repository_fingerprint(tmp_path, profile)
+    checker_before = report_checker_module._repository_fingerprint(
+        tmp_path,
+        profile_payload,
+    )
+    assert checker_before == runner_before
+
+    protected = tmp_path / "src/sigmacoder/domain/events.py"
+    protected.write_text(protected.read_text(encoding="utf-8") + "# 漂移\n", encoding="utf-8")
+
+    runner_after = mutation_module._repository_fingerprint(tmp_path, profile)
+    checker_after = report_checker_module._repository_fingerprint(
+        tmp_path,
+        profile_payload,
+    )
+    assert checker_after == runner_after
+    assert runner_after != runner_before
+
+
+def test_mutmut_results_完整保留已知原始状态() -> None:
     assert parse_mutmut_results("    a__mutmut_1: killed\n") == {"a__mutmut_1": "killed"}
+    assert parse_mutmut_results("    a__mutmut_1: survived\n") == {"a__mutmut_1": "survived"}
     with pytest.raises(MutationGateError, match="未返回任何"):
         parse_mutmut_results("")
-    with pytest.raises(MutationGateError, match="未被测试杀死"):
-        parse_mutmut_results("    a__mutmut_1: survived\n")
     with pytest.raises(MutationGateError, match="未知状态"):
         parse_mutmut_results("    a__mutmut_1: magical\n")
 
 
 @pytest.mark.parametrize("status", sorted(KNOWN_STATUSES - {"killed"}))
-def test_mutmut_results_拒绝每一种非_killed_状态(status: str) -> None:
+def test_mutmut_results_parser_保留每一种已知非_killed_状态(status: str) -> None:
     output = f"    killed__mutmut_1: killed\n    failed__mutmut_2: {status}\n"
 
-    with pytest.raises(MutationGateError, match="未被测试杀死"):
-        parse_mutmut_results(output)
+    assert parse_mutmut_results(output) == {
+        "killed__mutmut_1": "killed",
+        "failed__mutmut_2": status,
+    }
 
 
 @pytest.mark.parametrize(
@@ -303,19 +399,69 @@ def test_profile_连续两次全量并追加_property_only(
     assert not (tmp_path / "setup.cfg").exists()
     assert (tmp_path / "mutation-reports/events.json").is_file()
     assert not list((tmp_path / "mutation-reports").glob(".events.json.*.tmp"))
-    mutant_evidence = cast(dict[str, object], report["mutants"])
-    assert mutant_evidence["names"] == ["a__mutmut_1"]
-    assert len(cast(str, mutant_evidence["names_sha256"])) == 64
+    assert report["schema_version"] == 2
+    raw = cast(dict[str, object], report["raw"])
+    assert raw["total"] == 1
+    assert raw["killed"] == 1
+    assert raw["survived"] == 0
+    assert len(cast(str, raw["mutant_names_sha256"])) == 64
+    for item in runs:
+        assert item["results"] == [{"name": "a__mutmut_1", "status": "killed"}]
+        assert len(cast(str, item["result_statuses_sha256"])) == 64
     assert len({cast(str, item["source_fingerprint"]) for item in runs}) == 1
-    evidence = cast(dict[str, object], report["evidence"])
+    approved = cast(dict[str, object], report["approved_equivalents"])
+    assert approved["count"] == 0
+    assert approved["names"] == []
+    assert report["gate_passed"] is True
+    bindings = cast(dict[str, str], report["bindings"])
     validate_report_payload(
         report,
         profile,
-        source_fingerprint=cast(str, evidence["source_fingerprint"]),
-        git_head=cast(str, evidence["git_head"]),
-        uv_lock_sha256=cast(str, evidence["uv_lock_sha256"]),
+        source_fingerprint=bindings["source_fingerprint"],
+        git_head=bindings["git_head"],
+        uv_lock_sha256=bindings["uv_lock_sha256"],
+        expected_bindings=bindings,
     )
     assert not (tmp_path / "mutation-reports/.events.json.tmp").exists()
+
+
+@pytest.mark.parametrize("phase", ["before", "after"])
+def test_profile_报告发布前后都拒绝受保护状态漂移(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    create_inputs(tmp_path)
+    profile = load_profile(write_profile(tmp_path), "events")
+    source = tmp_path / "src/sigmacoder/domain/events.py"
+
+    def runner(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if is_mutmut_command(command, "results"):
+            return subprocess.CompletedProcess(command, 0, "    a__mutmut_1: killed\n", "")
+        return subprocess.CompletedProcess(command, 0, "run ok\n", "")
+
+    if phase == "before":
+        original_bindings = mutation_module._report_bindings
+
+        def drifting_bindings(*args: object, **kwargs: object) -> dict[str, str]:
+            result = original_bindings(*args, **kwargs)
+            source.write_text("VALUE = 2\n", encoding="utf-8")
+            return result
+
+        monkeypatch.setattr(mutation_module, "_report_bindings", drifting_bindings)
+    else:
+        original_writer = mutation_module._write_report_atomic
+
+        def drifting_writer(path: Path, report: dict[str, object]) -> None:
+            original_writer(path, report)
+            source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        monkeypatch.setattr(mutation_module, "_write_report_atomic", drifting_writer)
+
+    with pytest.raises(
+        MutationGateError, match=f"写 mutation report {phase == 'after' and '后' or '前'}"
+    ):
+        run_profile(tmp_path, profile, runner=runner, require_posix=False)
 
 
 def test_profile_命令失败时仍清理临时配置(tmp_path: Path) -> None:
@@ -487,8 +633,8 @@ def test_profile_仓库内_git_影子不能伪造绑定(
 
     report = run_profile(tmp_path, profile, runner=runner, require_posix=False)
 
-    evidence = cast(dict[str, object], report["evidence"])
-    assert evidence["git_head"]
+    bindings = cast(dict[str, object], report["bindings"])
+    assert bindings["git_head"]
 
 
 def test_profile_拒绝伪造或不匹配的_gauntlet_父_lease_token(
@@ -782,11 +928,11 @@ def test_profile_报告目标是链接时不删除外部_sentinel(tmp_path: Path
 @pytest.mark.parametrize(
     ("case", "message"),
     [
-        ("survivor", "survivors=0"),
-        ("empty", "不得是空"),
-        ("digest", "数量或摘要"),
-        ("runs", "运行次数"),
-        ("source", "未绑定当前提交"),
+        ("survivor", "raw.survived"),
+        ("empty", "空运行"),
+        ("digest", "名称摘要"),
+        ("runs", "runs 次数"),
+        ("source", "未绑定当前源码状态"),
     ],
 )
 def test_mutation_report_拒绝不完整或不新鲜证据(
@@ -796,39 +942,41 @@ def test_mutation_report_拒绝不完整或不新鲜证据(
 ) -> None:
     profile_object, report, _ = run_successful_events_profile(tmp_path)
     profile = cast(mutation_module.MutationProfile, profile_object)
-    evidence = cast(dict[str, object], report["evidence"])
+    bindings = cast(dict[str, object], report["bindings"])
     broken = copy.deepcopy(report)
     if case == "survivor":
-        broken["survivors"] = 1
+        cast(dict[str, object], broken["raw"])["survived"] = 1
     elif case == "empty":
-        cast(dict[str, object], broken["mutants"])["names"] = []
+        first_run = cast(dict[str, object], cast(list[object], broken["runs"])[0])
+        first_run["results"] = []
     elif case == "digest":
-        cast(dict[str, object], broken["mutants"])["names_sha256"] = "0" * 64
+        first_run = cast(dict[str, object], cast(list[object], broken["runs"])[0])
+        first_run["result_names_sha256"] = "0" * 64
     elif case == "runs":
         cast(list[object], broken["runs"]).pop()
     else:
-        cast(dict[str, object], broken["evidence"])["source_fingerprint"] = "0" * 64
+        cast(dict[str, object], broken["bindings"])["source_fingerprint"] = "0" * 64
 
     with pytest.raises(MutationReportError, match=message):
         validate_report_payload(
             broken,
             profile,
-            source_fingerprint=cast(str, evidence["source_fingerprint"]),
-            git_head=cast(str, evidence["git_head"]),
-            uv_lock_sha256=cast(str, evidence["uv_lock_sha256"]),
+            source_fingerprint=cast(str, bindings["source_fingerprint"]),
+            git_head=cast(str, bindings["git_head"]),
+            uv_lock_sha256=cast(str, bindings["uv_lock_sha256"]),
         )
 
 
 @pytest.mark.parametrize(
     ("case", "message"),
     [
-        ("schema", "不得是布尔值"),
-        ("survivors", "不得是布尔值"),
-        ("count", "不得是布尔值"),
-        ("run", "不得是布尔值"),
-        ("run_mutants", "不得是布尔值"),
-        ("seed", "未绑定当前提交"),
-        ("profile", "schema 或 profile"),
+        ("schema", "布尔值"),
+        ("survivors", "布尔值"),
+        ("count", "布尔值"),
+        ("run", "布尔值"),
+        ("run_mutants", "布尔值"),
+        ("approved", "布尔值"),
+        ("profile", "profile"),
     ],
 )
 def test_mutation_report_所有数值字段拒绝_bool(
@@ -838,20 +986,21 @@ def test_mutation_report_所有数值字段拒绝_bool(
 ) -> None:
     profile_object, report, _ = run_successful_events_profile(tmp_path)
     profile = cast(mutation_module.MutationProfile, profile_object)
-    evidence = cast(dict[str, object], report["evidence"])
+    bindings = cast(dict[str, object], report["bindings"])
     broken = copy.deepcopy(report)
     if case == "schema":
         broken["schema_version"] = True
     elif case == "survivors":
-        broken["survivors"] = False
+        cast(dict[str, object], broken["raw"])["survived"] = False
     elif case == "count":
-        cast(dict[str, object], broken["mutants"])["count"] = True
+        cast(dict[str, object], broken["raw"])["total"] = True
     elif case == "run":
         cast(dict[str, object], cast(list[object], broken["runs"])[0])["run"] = True
     elif case == "run_mutants":
-        cast(dict[str, object], cast(list[object], broken["runs"])[0])["mutants"] = True
-    elif case == "seed":
-        cast(dict[str, object], broken["evidence"])["hypothesis_seed"] = True
+        first_run = cast(dict[str, object], cast(list[object], broken["runs"])[0])
+        first_run["result_count"] = True
+    elif case == "approved":
+        cast(dict[str, object], broken["approved_equivalents"])["count"] = True
     else:
         cast(dict[str, object], broken["profile"])["timeout_constant"] = True
 
@@ -859,14 +1008,44 @@ def test_mutation_report_所有数值字段拒绝_bool(
         validate_report_payload(
             broken,
             profile,
-            source_fingerprint=cast(str, evidence["source_fingerprint"]),
-            git_head=cast(str, evidence["git_head"]),
-            uv_lock_sha256=cast(str, evidence["uv_lock_sha256"]),
+            source_fingerprint=cast(str, bindings["source_fingerprint"]),
+            git_head=cast(str, bindings["git_head"]),
+            uv_lock_sha256=cast(str, bindings["uv_lock_sha256"]),
         )
 
 
-def test_mutation_report_最终审计要求两个_profile_同时存在(tmp_path: Path) -> None:
-    _, _, config = run_successful_events_profile(tmp_path)
+def test_mutation_report_最终审计要求两个_profile_同时存在(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, report, config = run_successful_events_profile(tmp_path)
+    bindings = cast(dict[str, str], report["bindings"])
+    event_audit = {
+        "raw": report["raw"],
+        "approved_equivalents": {"count": 0, "names": []},
+        "unexpected_non_killed": {"count": 0, "names": [], "statuses": {}},
+        "gate_passed": True,
+    }
+    monkeypatch.setattr(
+        report_checker_module,
+        "load_equivalent_manifest",
+        lambda _repo, _path: {"profile": {}, "equivalents": []},
+    )
+    monkeypatch.setattr(
+        report_checker_module,
+        "_repository_fingerprint",
+        lambda _repo, _profile: bindings["source_fingerprint"],
+    )
+    monkeypatch.setattr(
+        report_checker_module,
+        "_expected_bindings",
+        lambda _repo, _profile, **_kwargs: bindings,
+    )
+    monkeypatch.setattr(
+        report_checker_module,
+        "_audit_events",
+        lambda _payload, _profile, _bindings, _manifest: event_audit,
+    )
 
     with pytest.raises(MutationReportError, match="task-service"):
         check_reports(tmp_path, config)

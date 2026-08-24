@@ -474,8 +474,9 @@ def test_真实_secret_scanner_观测并仅豁免十条已证明_hash() -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["findings"] == 0
-    assert payload["waived_findings"] == 10
-    assert payload["waiver_contract"] == "semantic-manifest-derived-v1"
+    assert payload["waived_findings"] == 15
+    assert payload["waiver_contract"] == "mutation-manifests-derived-v2"
+    assert len(payload["mutation_manifest_sha256"]) == 64
 
 
 def test_semantic_manifest_额外_token_不能借哈希豁免逃逸(tmp_path: Path) -> None:

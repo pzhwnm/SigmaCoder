@@ -16,9 +16,18 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 if __package__:
+    from tools.mutation_equivalents import (
+        EXPECTED_SOURCE_SHA256,
+        MANIFEST_RELATIVE_PATH,
+        MUTMUT_VERSION,
+        SPEC_RELATIVE_PATH,
+        EquivalentManifestError,
+        load_equivalent_manifest,
+    )
     from tools.repo_lease import (
         REPOSITORY_LEASE_TOKEN_ENV,
         RepositoryLeaseError,
@@ -26,7 +35,15 @@ if __package__:
     )
     from tools.trusted_tools import TrustedGit, TrustedToolError, resolve_trusted_uv
 else:  # pragma: no cover - 由真实脚本入口覆盖
-    from repo_lease import (  # type: ignore[no-redef]
+    from mutation_equivalents import (  # type: ignore[import-not-found,no-redef]
+        EXPECTED_SOURCE_SHA256,
+        MANIFEST_RELATIVE_PATH,
+        MUTMUT_VERSION,
+        SPEC_RELATIVE_PATH,
+        EquivalentManifestError,
+        load_equivalent_manifest,
+    )
+    from repo_lease import (  # type: ignore[import-not-found,no-redef]
         REPOSITORY_LEASE_TOKEN_ENV,
         RepositoryLeaseError,
         parent_or_standalone_repository_lease,
@@ -54,6 +71,9 @@ KNOWN_STATUSES = frozenset(
 MUTATION_CACHE_DIR = "mutants"
 MUTATION_REPORT_ROOT = "mutation-reports"
 MUTATION_LOCK_FILE = ".mutation-run.lock"
+MUTATION_EQUIVALENCE_CHECKER = "tools/check_mutation_equivalents.py"
+MUTATION_REPORT_CHECKER = "tools/check_mutation_reports.py"
+MUTATION_MANIFEST_MODULE = "tools/mutation_equivalents.py"
 HYPOTHESIS_PROFILE = "default"
 HYPOTHESIS_SEED = 20260823
 PROFILE_CONTRACTS: dict[str, dict[str, object]] = {
@@ -134,6 +154,17 @@ class MutationProfile:
     repeat: int
     cache_dir: str
     report_path: str
+
+
+@dataclass(frozen=True)
+class MutationPolicy:
+    """一次 profile 运行所绑定的精确等价策略。"""
+
+    manifest: Mapping[str, object] | None
+    manifest_sha256: str
+    expected_mutant_count: int | None
+    expected_mutant_names_sha256: str | None
+    approved_names: tuple[str, ...]
 
 
 def _validate_profile_contract(profile: MutationProfile) -> None:
@@ -402,8 +433,13 @@ def _protected_paths(profile: MutationProfile) -> tuple[str, ...]:
         *profile.property_test_selection,
         "pyproject.toml",
         "uv.lock",
+        SPEC_RELATIVE_PATH,
         "tools/mutation_profiles.json",
+        MANIFEST_RELATIVE_PATH,
+        MUTATION_MANIFEST_MODULE,
         "tools/run_mutation_profile.py",
+        MUTATION_EQUIVALENCE_CHECKER,
+        MUTATION_REPORT_CHECKER,
     )
 
 
@@ -489,6 +525,115 @@ def _file_digest(path: Path, label: str) -> str:
         raise MutationGateError(f"无法读取 {label} 摘要：{exc}") from exc
 
 
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _result_items(mutants: Mapping[str, str]) -> list[dict[str, str]]:
+    return [
+        {"name": name, "status": mutants[name]}
+        for name in sorted(mutants, key=lambda value: value.encode("utf-8"))
+    ]
+
+
+def _result_statuses_digest(results: Sequence[Mapping[str, str]]) -> str:
+    return _canonical_sha256(list(results))
+
+
+def _load_policy(repo: Path, profile: MutationProfile) -> MutationPolicy:
+    if profile.name != "events":
+        return MutationPolicy(
+            manifest=None,
+            manifest_sha256="0" * 64,
+            expected_mutant_count=None,
+            expected_mutant_names_sha256=None,
+            approved_names=(),
+        )
+    try:
+        manifest = load_equivalent_manifest(repo, repo / MANIFEST_RELATIVE_PATH)
+    except EquivalentManifestError as exc:
+        raise MutationGateError(f"等价 mutant 清单无效：{exc}") from exc
+    raw_profile = manifest.get("profile")
+    raw_entries = manifest.get("equivalents")
+    if not isinstance(raw_profile, Mapping) or not isinstance(raw_entries, list):
+        raise MutationGateError("等价 mutant 清单缺少 profile 或 equivalents。")
+    expected_count = raw_profile.get("expected_mutant_count")
+    expected_digest = raw_profile.get("expected_mutant_names_sha256")
+    if (
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or not isinstance(expected_digest, str)
+    ):
+        raise MutationGateError("等价 mutant 清单的全集绑定类型无效。")
+    approved_names: list[str] = []
+    for entry in raw_entries:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str):
+            raise MutationGateError("等价 mutant 清单包含无效条目。")
+        approved_names.append(cast(str, entry["name"]))
+    return MutationPolicy(
+        manifest=manifest,
+        manifest_sha256=_canonical_sha256(manifest),
+        expected_mutant_count=expected_count,
+        expected_mutant_names_sha256=expected_digest,
+        approved_names=tuple(approved_names),
+    )
+
+
+def _verify_policy_baseline(policy: MutationPolicy, names: Sequence[str]) -> None:
+    if policy.expected_mutant_count is None:
+        return
+    if len(names) != policy.expected_mutant_count:
+        raise MutationGateError("mutation 实际总数与等价清单批准基线不一致。")
+    if _mutant_names_digest(names) != policy.expected_mutant_names_sha256:
+        raise MutationGateError("mutation 实际名称全集摘要与批准基线不一致。")
+
+
+def _report_bindings(
+    repo: Path,
+    profile: MutationProfile,
+    policy: MutationPolicy,
+    source_fingerprint: str,
+) -> dict[str, str]:
+    if len(profile.only_mutate) != 1:
+        raise MutationGateError("mutation profile 必须精确绑定一个 only_mutate 源文件。")
+    source_path = repo / profile.only_mutate[0]
+    bindings = {
+        "git_head": _git_head(repo).decode("ascii"),
+        "spec_version": "r5",
+        "spec_sha256": _file_digest(repo / SPEC_RELATIVE_PATH, "T01 SPEC"),
+        "mutmut_version": MUTMUT_VERSION,
+        "uv_lock_sha256": _file_digest(repo / "uv.lock", "uv.lock"),
+        "profile_sha256": _file_digest(
+            repo / "tools/mutation_profiles.json",
+            "mutation profile",
+        ),
+        "source_fingerprint": source_fingerprint,
+        "source_sha256": _file_digest(source_path, "mutation 源文件"),
+        "manifest_sha256": policy.manifest_sha256,
+        "runner_sha256": _file_digest(
+            repo / "tools/run_mutation_profile.py",
+            "mutation runner",
+        ),
+        "checker_sha256": _file_digest(
+            repo / MUTATION_EQUIVALENCE_CHECKER,
+            "等价 checker",
+        ),
+        "report_checker_sha256": _file_digest(
+            repo / MUTATION_REPORT_CHECKER,
+            "报告 checker",
+        ),
+    }
+    if profile.name == "events" and bindings["source_sha256"] != EXPECTED_SOURCE_SHA256:
+        raise MutationGateError("events 源文件摘要与 r5 批准不一致。")
+    return bindings
+
+
 def parse_mutmut_results(output: str) -> dict[str, str]:
     results: dict[str, str] = {}
     for raw_line in output.splitlines():
@@ -505,11 +650,65 @@ def parse_mutmut_results(output: str) -> dict[str, str]:
         results[name] = status
     if not results:
         raise MutationGateError("mutmut 未返回任何 mutant，拒绝空运行。")
-    failed = {name: status for name, status in results.items() if status != "killed"}
-    if failed:
-        summary = ", ".join(f"{name}={status}" for name, status in sorted(failed.items()))
-        raise MutationGateError(f"存在未被测试杀死的 mutant：{summary}")
     return results
+
+
+def _validate_mutation_result_universe(
+    results: Mapping[str, str],
+    expected: Sequence[str],
+    approved: Sequence[str],
+) -> None:
+    """验证全集与状态域；不对 runner 原始结果做任何重写。"""
+
+    if len(expected) != len(set(expected)) or len(approved) != len(set(approved)):
+        raise MutationGateError("mutation 预期全集或批准清单包含重复名称。")
+    if any(
+        not isinstance(status, str) or status not in KNOWN_STATUSES for status in results.values()
+    ):
+        raise MutationGateError("mutation 结果包含非字符串或未知状态。")
+    if set(approved) - set(results):
+        raise MutationGateError("获批等价 mutant 在实际全集中缺失。")
+    if set(results) != set(expected):
+        raise MutationGateError("mutation 实际名称全集与批准基线不一致。")
+    if any(status not in {"killed", "survived"} for status in results.values()):
+        raise MutationGateError("mutation 存在既非 killed 也非 survived 的非法状态。")
+
+
+def evaluate_mutation_results(
+    profile_name: str,
+    results: Mapping[str, str],
+    *,
+    expected_names: Sequence[str],
+    approved_names: Sequence[str],
+) -> dict[str, object]:
+    """在不改写原始状态的前提下执行精确 mutant 集合策略。"""
+
+    expected = tuple(expected_names)
+    approved = tuple(approved_names)
+    _validate_mutation_result_universe(results, expected, approved)
+    listed_but_killed = sorted(name for name in approved if results[name] == "killed")
+    if listed_but_killed:
+        raise MutationGateError("获批等价 mutant 已被杀死，清单属于陈旧批准。")
+    survived = tuple(sorted(name for name, status in results.items() if status == "survived"))
+    unexpected = tuple(sorted(set(survived) - set(approved)))
+    if unexpected:
+        raise MutationGateError("存在清单外 survivor。")
+    if survived != tuple(sorted(approved)):
+        raise MutationGateError("实际 survivor 集合与精确批准清单不一致。")
+    if profile_name != "events" and approved:
+        raise MutationGateError(f"{profile_name} profile 不允许等价 mutant 清单。")
+    killed = sum(status == "killed" for status in results.values())
+    approved_list = list(survived)
+    return {
+        "raw": {"total": len(results), "killed": killed, "survived": len(survived)},
+        "approved_equivalents": {
+            "count": len(approved_list),
+            "names": approved_list,
+            "names_sha256": _mutant_names_digest(approved_list),
+        },
+        "unexpected_non_killed": {"count": 0, "names": [], "statuses": {}},
+        "gate_passed": True,
+    }
 
 
 def _remove_owned_setup_cfg(lease: _SetupConfigLease) -> str | None:
@@ -707,9 +906,22 @@ def _record_mutation_run(
     runner: CommandRunner,
     baseline_names: tuple[str, ...] | None,
     baseline_source_fingerprint: str | None,
-) -> tuple[tuple[str, ...], str, dict[str, object]]:
+    baseline_results: tuple[tuple[str, str], ...] | None,
+    policy: MutationPolicy | None,
+) -> tuple[
+    tuple[str, ...],
+    str,
+    tuple[tuple[str, str], ...],
+    dict[str, object],
+    dict[str, object],
+    MutationPolicy,
+]:
     mutants, source_fingerprint = _run_once(repo, profile, tests, runner=runner)
-    names = tuple(sorted(mutants))
+    if policy is None:
+        policy = _load_policy(repo, profile)
+    names = tuple(sorted(mutants, key=lambda value: value.encode("utf-8")))
+    normalized_results = tuple((name, mutants[name]) for name in names)
+    _verify_policy_baseline(policy, names)
     if baseline_names is not None and names != baseline_names:
         raise MutationGateError("mutation 各次运行枚举出的 mutant 集合不一致。")
     if (
@@ -717,14 +929,25 @@ def _record_mutation_run(
         and source_fingerprint != baseline_source_fingerprint
     ):
         raise MutationGateError("mutation 各次运行前的源码或 Git 状态指纹不一致。")
+    if baseline_results is not None and normalized_results != baseline_results:
+        raise MutationGateError("mutation 各次运行的完整 mutant 状态集合不一致。")
+    evaluation = evaluate_mutation_results(
+        profile.name,
+        mutants,
+        expected_names=names,
+        approved_names=policy.approved_names,
+    )
+    results = _result_items(mutants)
     evidence = {
         "kind": kind,
         "run": run_number,
-        "mutants": len(names),
-        "mutant_names_sha256": _mutant_names_digest(names),
         "source_fingerprint": source_fingerprint,
+        "result_count": len(names),
+        "result_names_sha256": _mutant_names_digest(names),
+        "result_statuses_sha256": _result_statuses_digest(results),
+        "results": results,
     }
-    return names, source_fingerprint, evidence
+    return names, source_fingerprint, normalized_results, evidence, evaluation, policy
 
 
 def _report_temp_problem(lease: _ReportTempLease) -> str | None:
@@ -806,9 +1029,12 @@ def _run_profile_locked(
     runner: CommandRunner,
 ) -> dict[str, object]:
     validate_inputs(repo, profile)
+    policy: MutationPolicy | None = None
     runs: list[dict[str, object]] = []
     baseline_names: tuple[str, ...] | None = None
     baseline_source_fingerprint: str | None = None
+    baseline_results: tuple[tuple[str, str], ...] | None = None
+    evaluation: dict[str, object] | None = None
 
     report_path = _managed_report_path(repo, profile)
     try:
@@ -816,7 +1042,14 @@ def _run_profile_locked(
     except OSError as exc:
         raise MutationGateError(f"无法删除陈旧 mutation report：{exc}") from exc
     for run_number in range(1, profile.repeat + 1):
-        baseline_names, baseline_source_fingerprint, evidence = _record_mutation_run(
+        (
+            baseline_names,
+            baseline_source_fingerprint,
+            baseline_results,
+            evidence,
+            evaluation,
+            policy,
+        ) = _record_mutation_run(
             repo,
             profile,
             profile.test_selection,
@@ -825,10 +1058,19 @@ def _run_profile_locked(
             runner=runner,
             baseline_names=baseline_names,
             baseline_source_fingerprint=baseline_source_fingerprint,
+            baseline_results=baseline_results,
+            policy=policy,
         )
         runs.append(evidence)
     if profile.property_test_selection:
-        baseline_names, baseline_source_fingerprint, evidence = _record_mutation_run(
+        (
+            baseline_names,
+            baseline_source_fingerprint,
+            baseline_results,
+            evidence,
+            evaluation,
+            policy,
+        ) = _record_mutation_run(
             repo,
             profile,
             profile.property_test_selection,
@@ -837,31 +1079,53 @@ def _run_profile_locked(
             runner=runner,
             baseline_names=baseline_names,
             baseline_source_fingerprint=baseline_source_fingerprint,
+            baseline_results=baseline_results,
+            policy=policy,
         )
         runs.append(evidence)
-    if baseline_names is None:
+    if (
+        baseline_names is None
+        or evaluation is None
+        or baseline_source_fingerprint is None
+        or policy is None
+    ):
         raise MutationGateError("mutation profile 未执行任何有效运行。")
+    raw_evaluation = cast(Mapping[str, object], evaluation["raw"])
+    approved_evaluation = cast(Mapping[str, object], evaluation["approved_equivalents"])
+    unexpected_evaluation = cast(
+        Mapping[str, object],
+        evaluation["unexpected_non_killed"],
+    )
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "profile": _profile_payload(profile),
-        "evidence": {
-            "git_head": _git_head(repo).decode("ascii"),
-            "hypothesis_profile": HYPOTHESIS_PROFILE,
-            "hypothesis_seed": HYPOTHESIS_SEED,
-            "profile_sha256": _profile_digest(profile),
-            "source_fingerprint": baseline_source_fingerprint,
-            "uv_lock_sha256": _file_digest(repo / "uv.lock", "uv.lock"),
-        },
+        "bindings": _report_bindings(
+            repo,
+            profile,
+            policy,
+            baseline_source_fingerprint,
+        ),
         "runs": runs,
-        "mutants": {
-            "count": len(baseline_names),
-            "names_sha256": _mutant_names_digest(baseline_names),
-            "names": list(baseline_names),
+        "raw": {
+            **raw_evaluation,
+            "mutant_names_sha256": _mutant_names_digest(baseline_names),
         },
-        "survivors": 0,
+        "approved_equivalents": {
+            "count": approved_evaluation["count"],
+            "names": approved_evaluation["names"],
+            "digest": approved_evaluation["names_sha256"],
+        },
+        "unexpected_non_killed": dict(unexpected_evaluation),
+        "gate_passed": evaluation["gate_passed"],
     }
     report_path = _managed_report_path(repo, profile)
+    before_publish_fingerprint = _repository_fingerprint(repo, profile)
+    if before_publish_fingerprint != baseline_source_fingerprint:
+        raise MutationGateError("写 mutation report 前受保护仓库状态发生漂移。")
     _write_report_atomic(report_path, report)
+    after_publish_fingerprint = _repository_fingerprint(repo, profile)
+    if after_publish_fingerprint != before_publish_fingerprint:
+        raise MutationGateError("写 mutation report 后受保护仓库状态发生漂移。")
     return report
 
 

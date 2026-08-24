@@ -16,9 +16,11 @@ import tools.check_secrets as secrets_module
 from tools.check_secrets import (
     DETECT_SECRETS_VERSION,
     DISABLED_SECRET_FILTERS,
+    EXPECTED_MUTATION_WAIVERS,
     EXPECTED_SECRET_FILTER_CONFIGS,
     EXPECTED_SECRET_PLUGIN_CONFIGS,
     EXPECTED_SEMANTIC_WAIVERS,
+    MUTATION_MANIFEST_PATH,
     SEMANTIC_MANIFEST_PATH,
     SecretGateError,
     parse_scan_output,
@@ -29,6 +31,10 @@ from tools.check_toolchain import ToolchainError, check_toolchain, validate_vers
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _HASH_FIELD = re.compile(
     r'\s*"expected_(?:source|mutant)_sha256": "(?P<value>[0-9a-f]{64})",?\s*\Z'
+)
+_MUTATION_HASH_FIELD = re.compile(
+    r'"(?:uv_lock_sha256|profile_sha256|expected_mutant_names_sha256|'
+    r'expected_equivalent_names_sha256|sha256)": "(?P<value>[0-9a-f]{64})"'
 )
 
 
@@ -143,6 +149,53 @@ def semantic_results() -> dict[str, list[object]]:
         )
     assert len(findings) == EXPECTED_SEMANTIC_WAIVERS
     return {result_path: findings}
+
+
+def mutation_input_paths() -> tuple[str, ...]:
+    payload = json.loads((PROJECT_ROOT / MUTATION_MANIFEST_PATH).read_text(encoding="utf-8"))
+    paths = {
+        MUTATION_MANIFEST_PATH,
+        "uv.lock",
+        "tools/mutation_profiles.json",
+        payload["approved_spec"]["path"],
+    }
+    paths.update(item["source"]["path"] for item in payload["equivalents"])
+    return tuple(sorted(paths))
+
+
+def waiver_input_paths() -> tuple[str, ...]:
+    return tuple(sorted(set(semantic_input_paths()) | set(mutation_input_paths())))
+
+
+def mutation_results() -> dict[str, list[object]]:
+    findings: list[object] = []
+    seen: set[str] = set()
+    manifest = PROJECT_ROOT / MUTATION_MANIFEST_PATH
+    result_path = MUTATION_MANIFEST_PATH.replace("/", "\\")
+    for line_number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), start=1):
+        match = _MUTATION_HASH_FIELD.search(line)
+        if match is None:
+            continue
+        hashed_secret = hashlib.sha1(
+            match["value"].encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
+        if hashed_secret in seen:
+            continue
+        seen.add(hashed_secret)
+        findings.append(
+            secret_finding(
+                "Hex High Entropy String",
+                filename=result_path,
+                line_number=line_number,
+                hashed_secret=hashed_secret,
+            )
+        )
+    assert len(findings) == EXPECTED_MUTATION_WAIVERS
+    return {result_path: findings}
+
+
+def waiver_results() -> dict[str, list[object]]:
+    return {**semantic_results(), **mutation_results()}
 
 
 def copy_semantic_inputs(destination: Path) -> tuple[str, ...]:
@@ -481,32 +534,36 @@ def test_secret_scan_最后一批跨越全局_deadline_即使_rc0_也拒绝(
         )
 
 
-def test_secret_scan_仅后置豁免十条已证明的_semantic_hash() -> None:
-    listing = "".join(f"{path}\0" for path in semantic_input_paths())
+def test_secret_scan_仅后置豁免两份_manifest_派生的精确_hash() -> None:
+    listing = "".join(f"{path}\0" for path in waiver_input_paths())
     detector_cwds: list[Path] = []
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if is_git_command(command):
             return fake_git_success(command, listing)
         detector_cwds.append(Path(str(kwargs["cwd"])))
-        return completed(stdout=scanner_payload_for_command(command, semantic_results()))
+        return completed(stdout=scanner_payload_for_command(command, waiver_results()))
 
     evidence = scan_repository(PROJECT_ROOT, runner=runner)
 
-    assert evidence.waived_findings == EXPECTED_SEMANTIC_WAIVERS
+    assert evidence.waived_findings == EXPECTED_SEMANTIC_WAIVERS + EXPECTED_MUTATION_WAIVERS
     assert (
         evidence.manifest_sha256
         == hashlib.sha256((PROJECT_ROOT / SEMANTIC_MANIFEST_PATH).read_bytes()).hexdigest()
     )
-    assert len(detector_cwds) == len(semantic_input_paths())
+    assert (
+        evidence.mutation_manifest_sha256
+        == hashlib.sha256((PROJECT_ROOT / MUTATION_MANIFEST_PATH).read_bytes()).hexdigest()
+    )
+    assert len(detector_cwds) == len(waiver_input_paths())
     assert len(set(detector_cwds)) == 1
     assert detector_cwds[0] != PROJECT_ROOT
 
 
 def test_secret_scan_缺失任一预期_semantic_finding_即拒绝() -> None:
-    listing = "".join(f"{path}\0" for path in semantic_input_paths())
-    results = semantic_results()
-    next(iter(results.values())).pop()
+    listing = "".join(f"{path}\0" for path in waiver_input_paths())
+    results = waiver_results()
+    results[SEMANTIC_MANIFEST_PATH.replace("/", "\\")].pop()
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if is_git_command(command):
@@ -517,10 +574,24 @@ def test_secret_scan_缺失任一预期_semantic_finding_即拒绝() -> None:
         scan_repository(PROJECT_ROOT, runner=runner)
 
 
+def test_secret_scan_缺失任一预期_mutation_finding_即拒绝() -> None:
+    listing = "".join(f"{path}\0" for path in waiver_input_paths())
+    results = waiver_results()
+    results[MUTATION_MANIFEST_PATH.replace("/", "\\")].pop()
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if is_git_command(command):
+            return fake_git_success(command, listing)
+        return completed(stdout=scanner_payload_for_command(command, results))
+
+    with pytest.raises(SecretGateError, match="未观测到.*5 条"):
+        scan_repository(PROJECT_ROOT, runner=runner)
+
+
 def test_secret_scan_重复任一预期_semantic_finding_即拒绝() -> None:
-    listing = "".join(f"{path}\0" for path in semantic_input_paths())
-    results = json.loads(json.dumps(semantic_results()))
-    findings = next(iter(results.values()))
+    listing = "".join(f"{path}\0" for path in waiver_input_paths())
+    results = json.loads(json.dumps(waiver_results()))
+    findings = results[SEMANTIC_MANIFEST_PATH.replace("/", "\\")]
     findings.append(dict(findings[0]))
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -534,9 +605,9 @@ def test_secret_scan_重复任一预期_semantic_finding_即拒绝() -> None:
 
 @pytest.mark.parametrize("axis", ["path", "type", "line", "hash", "verified"])
 def test_secret_scan_semantic_豁免身份任一维度不匹配均拒绝(axis: str) -> None:
-    listing = "".join(f"{path}\0" for path in semantic_input_paths())
-    results = json.loads(json.dumps(semantic_results()))
-    result_path = next(iter(results))
+    listing = "".join(f"{path}\0" for path in waiver_input_paths())
+    results = json.loads(json.dumps(waiver_results()))
+    result_path = SEMANTIC_MANIFEST_PATH.replace("/", "\\")
     first = results[result_path][0]
     if axis == "path":
         results["outside.json"] = results.pop(result_path)
@@ -557,7 +628,7 @@ def test_secret_scan_semantic_豁免身份任一维度不匹配均拒绝(axis: s
             return completed(stdout=secret_payload(results))
         return completed(stdout=scanner_payload_for_command(command, results))
 
-    with pytest.raises(SecretGateError, match="清单外|未观测到|疑似秘密"):
+    with pytest.raises(SecretGateError, match="清单外|未观测到|疑似秘密|重复路径"):
         scan_repository(PROJECT_ROOT, runner=runner)
 
 

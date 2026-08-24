@@ -20,6 +20,7 @@ from tests.property.test_event_chain_properties import (
     JSON_VALUES,
     _assert_domain_failure,
     _assert_exact_restore,
+    _assert_public_multi_malformed_failure,
 )
 from tests.support.event_contract import (
     EventsApi,
@@ -220,20 +221,18 @@ def test_generated_damage_fails_closed_and_physical_order_is_irrelevant(
     compound_schema[0]["actor"] = "model"
     compound_schema[1]["event_type"] = "UnknownEventV1"
     reordered_schema = [compound_schema[index] for index in order]
-    _assert_domain_failure(
+    _assert_public_multi_malformed_failure(
         reordered_schema,
-        "EVENT_ENVELOPE_INVALID",
-        "actor 或 sensitivity 不符合 T01 固定语义。",
+        frozenset({"EVENT_ENVELOPE_INVALID", "UNSUPPORTED_EVENT_SCHEMA"}),
     )
 
     compound_hash_phases = deepcopy(events)
     compound_hash_phases[0]["event_hash"] = "f" * 64
     compound_hash_phases[2]["previous_hash"] = "e" * 64
     reordered_hashes = [compound_hash_phases[index] for index in order]
-    _assert_domain_failure(
+    _assert_public_multi_malformed_failure(
         reordered_hashes,
-        "EVENT_PREVIOUS_HASH_MISMATCH",
-        "事件 previous_hash 与前序事实不一致。",
+        frozenset({"EVENT_PREVIOUS_HASH_MISMATCH", "EVENT_HASH_MISMATCH"}),
     )
 
     if damage_kind == "PHYSICAL_ROTATION":

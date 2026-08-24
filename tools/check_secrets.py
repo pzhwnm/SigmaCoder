@@ -18,9 +18,10 @@ from pathlib import Path, PurePosixPath
 from typing import Final, cast
 
 if __package__:
-    from tools import semantic_mutants
+    from tools import mutation_equivalents, semantic_mutants
     from tools.trusted_tools import TrustedGit, TrustedToolError
 else:  # pragma: no cover - 由真实脚本入口覆盖
+    import mutation_equivalents  # type: ignore[import-not-found,no-redef]
     import semantic_mutants  # type: ignore[import-not-found,no-redef]
     from trusted_tools import (  # type: ignore[import-not-found,no-redef]
         TrustedGit,
@@ -34,9 +35,11 @@ class SecretGateError(RuntimeError):
 
 ScanRunner = Callable[..., subprocess.CompletedProcess[str]]
 DETECT_SECRETS_VERSION: Final = "1.5.0"
-WAIVER_CONTRACT_VERSION: Final = "semantic-manifest-derived-v1"
+WAIVER_CONTRACT_VERSION: Final = "mutation-manifests-derived-v2"
 SEMANTIC_MANIFEST_PATH: Final = "tools/semantic_mutants.json"
+MUTATION_MANIFEST_PATH: Final = mutation_equivalents.MANIFEST_RELATIVE_PATH
 EXPECTED_SEMANTIC_WAIVERS: Final = 10
+EXPECTED_MUTATION_WAIVERS: Final = 5
 HEX_ENTROPY_FINDING_TYPE: Final = "Hex High Entropy String"
 ConfigValue = str | float
 ConfigSpec = tuple[tuple[str, ConfigValue], ...]
@@ -98,6 +101,16 @@ _SEMANTIC_HASH_LINE = re.compile(
     r'\s*"(?P<field>expected_(?:source|mutant)_sha256)": '
     r'"(?P<value>[0-9a-f]{64})",?\s*\Z'
 )
+_MUTATION_HASH_LINE = re.compile(
+    r'\s*"(?P<field>uv_lock_sha256|profile_sha256|expected_mutant_names_sha256|'
+    r'expected_equivalent_names_sha256)": '
+    r'"(?P<value>[0-9a-f]{64})",?\s*\Z'
+)
+_MUTATION_SOURCE_HASH_LINE = re.compile(
+    r'\s*"source": \{"path": "src/sigmacoder/domain/events\.py", '
+    r'"function": "[A-Za-z_][A-Za-z0-9_]*", "sha256": '
+    r'"(?P<value>[0-9a-f]{64})"\},?\s*\Z'
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +139,7 @@ class SecretScanEvidence:
 
     waived_findings: int
     manifest_sha256: str | None
+    mutation_manifest_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,19 +276,34 @@ def _live_manifest_path_part_exists(path: Path, *, is_leaf: bool) -> bool:
     return True
 
 
-def _live_manifest_exists(repo: Path) -> bool:
+def _live_manifest_exists(repo: Path, relative_path: str, label: str) -> bool:
     current = repo
-    parts = PurePosixPath(SEMANTIC_MANIFEST_PATH).parts
+    parts = PurePosixPath(relative_path).parts
     for index, part in enumerate(parts):
         current /= part
-        if not _live_manifest_path_part_exists(current, is_leaf=index == len(parts) - 1):
+        try:
+            exists = _live_manifest_path_part_exists(
+                current,
+                is_leaf=index == len(parts) - 1,
+            )
+        except SecretGateError as exc:
+            raise SecretGateError(f"{label} 路径核验失败：{exc}") from exc
+        if not exists:
             return False
     return True
 
 
 def _assert_live_manifest_membership(repo: Path, scan_paths: Sequence[str]) -> None:
-    if _live_manifest_exists(repo) and f"./{SEMANTIC_MANIFEST_PATH}" not in scan_paths:
-        raise SecretGateError("live 语义变异 manifest 存在但未进入 Git 秘密扫描清单。")
+    manifests = (
+        (SEMANTIC_MANIFEST_PATH, "live 语义变异 manifest"),
+        (MUTATION_MANIFEST_PATH, "live 等价 mutant manifest"),
+    )
+    for relative_path, label in manifests:
+        if (
+            _live_manifest_exists(repo, relative_path, label)
+            and f"./{relative_path}" not in scan_paths
+        ):
+            raise SecretGateError(f"{label} 存在但未进入 Git 秘密扫描清单。")
 
 
 def _capture_live_inputs(repo: Path, scan_paths: Sequence[str]) -> dict[str, bytes]:
@@ -449,14 +478,14 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
     return output
 
 
-def _validate_strict_manifest_json(raw: bytes) -> None:
+def _validate_strict_manifest_json(raw: bytes, label: str) -> None:
     try:
         text = raw.decode("utf-8", errors="strict")
         json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
     except SecretGateError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SecretGateError(f"语义变异 manifest 不是严格 UTF-8 JSON：{exc}") from exc
+        raise SecretGateError(f"{label} 不是严格 UTF-8 JSON：{exc}") from exc
 
 
 def _manifest_hash_rows(
@@ -538,7 +567,7 @@ def _build_semantic_waiver_contract(
 
     try:
         raw = manifest_path.read_bytes()
-        _validate_strict_manifest_json(raw)
+        _validate_strict_manifest_json(raw, "语义变异 manifest")
         manifest = semantic_mutants.load_manifest(manifest_path)
         if manifest.sha256 != hashlib.sha256(raw).hexdigest():
             raise SecretGateError("语义变异 manifest 在解析期间发生变化。")
@@ -556,6 +585,120 @@ def _build_semantic_waiver_contract(
         manifest_sha256=manifest.sha256,
         source_hashes=tuple(sorted(source_hashes.items())),
         expected_findings=_semantic_waiver_identities(rows),
+    )
+
+
+def _mutation_manifest_hash_rows(
+    raw: bytes,
+    manifest: Mapping[str, object],
+) -> tuple[tuple[int, str, str], ...]:
+    """把 r5 清单中的五类固定 SHA 字段绑定到严格解析后的值。"""
+
+    rows: list[tuple[int, str, str]] = []
+    field_tokens = (
+        '"uv_lock_sha256"',
+        '"profile_sha256"',
+        '"expected_mutant_names_sha256"',
+        '"expected_equivalent_names_sha256"',
+        '"sha256"',
+    )
+    for line_number, line in enumerate(raw.decode("utf-8", errors="strict").splitlines(), start=1):
+        if not any(token in line for token in field_tokens):
+            continue
+        match = _MUTATION_HASH_LINE.fullmatch(line)
+        if match is not None:
+            rows.append((line_number, match["field"], match["value"]))
+            continue
+        source_match = _MUTATION_SOURCE_HASH_LINE.fullmatch(line)
+        if source_match is None:
+            raise SecretGateError("等价 mutant manifest 的 SHA-256 字段必须独占规范单行。")
+        rows.append((line_number, "sha256", source_match["value"]))
+
+    generator = cast(Mapping[str, object], manifest["generator"])
+    profile = cast(Mapping[str, object], manifest["profile"])
+    equivalents = cast(Sequence[Mapping[str, object]], manifest["equivalents"])
+    expected = (
+        ("uv_lock_sha256", generator["uv_lock_sha256"]),
+        ("profile_sha256", profile["profile_sha256"]),
+        ("expected_mutant_names_sha256", profile["expected_mutant_names_sha256"]),
+        (
+            "expected_equivalent_names_sha256",
+            profile["expected_equivalent_names_sha256"],
+        ),
+        *(
+            ("sha256", cast(Mapping[str, object], entry["source"])["sha256"])
+            for entry in equivalents
+        ),
+    )
+    if tuple((field, value) for _, field, value in rows) != expected:
+        raise SecretGateError("等价 mutant manifest 的哈希字段顺序、数量或值不符合固定契约。")
+    return tuple(rows)
+
+
+def _mutation_waiver_identities(
+    rows: Sequence[tuple[int, str, str]],
+) -> frozenset[FindingIdentity]:
+    identities: list[FindingIdentity] = []
+    seen: set[str] = set()
+    for line_number, _field, value in rows:
+        hashed_secret = hashlib.sha1(value.encode("utf-8"), usedforsecurity=False).hexdigest()
+        if hashed_secret in seen:
+            continue
+        seen.add(hashed_secret)
+        identities.append(
+            FindingIdentity(
+                path=MUTATION_MANIFEST_PATH,
+                secret_type=HEX_ENTROPY_FINDING_TYPE,
+                line_number=line_number,
+                hashed_secret=hashed_secret,
+                is_verified=False,
+            )
+        )
+    if len(identities) != EXPECTED_MUTATION_WAIVERS:
+        raise SecretGateError(
+            f"等价 mutant manifest 必须派生恰好 {EXPECTED_MUTATION_WAIVERS} 条固定秘密扫描豁免。"
+        )
+    return frozenset(identities)
+
+
+def _build_mutation_waiver_contract(
+    repo: Path,
+    scan_paths: Sequence[str],
+) -> SemanticWaiverContract | None:
+    manifest_path = repo / MUTATION_MANIFEST_PATH
+    if not manifest_path.exists():
+        return None
+    if f"./{MUTATION_MANIFEST_PATH}" not in scan_paths:
+        raise SecretGateError("等价 mutant manifest 存在但未进入 Git 秘密扫描清单。")
+
+    try:
+        raw = manifest_path.read_bytes()
+        _validate_strict_manifest_json(raw, "等价 mutant manifest")
+        manifest = mutation_equivalents.load_equivalent_manifest(repo, manifest_path)
+        manifest_sha256 = hashlib.sha256(raw).hexdigest()
+        if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != manifest_sha256:
+            raise SecretGateError("等价 mutant manifest 在解析期间发生变化。")
+    except SecretGateError:
+        raise
+    except (OSError, UnicodeError, mutation_equivalents.EquivalentManifestError) as exc:
+        raise SecretGateError(f"等价 mutant 哈希豁免无法获得权威证明：{exc}") from exc
+
+    required_paths = (
+        mutation_equivalents.LOCK_RELATIVE_PATH,
+        mutation_equivalents.PROFILE_RELATIVE_PATH,
+        mutation_equivalents.SOURCE_RELATIVE_PATH,
+        mutation_equivalents.SPEC_RELATIVE_PATH,
+    )
+    source_hashes: list[tuple[str, str]] = []
+    for relative in required_paths:
+        if f"./{relative}" not in scan_paths:
+            raise SecretGateError(f"等价 mutant 绑定输入未进入 Git 秘密扫描清单：{relative}。")
+        source_hashes.append((relative, hashlib.sha256((repo / relative).read_bytes()).hexdigest()))
+    rows = _mutation_manifest_hash_rows(raw, manifest)
+    return SemanticWaiverContract(
+        manifest_sha256=manifest_sha256,
+        source_hashes=tuple(source_hashes),
+        expected_findings=_mutation_waiver_identities(rows),
     )
 
 
@@ -805,16 +948,26 @@ def _assert_live_inputs_unchanged(
 def _evaluate_findings(
     results: Mapping[str, list[object]],
     scan_paths: Sequence[str],
-    contract: SemanticWaiverContract | None,
+    semantic_contract: SemanticWaiverContract | None,
+    mutation_contract: SemanticWaiverContract | None,
 ) -> SecretScanEvidence:
     observed = frozenset(_finding_identities(results, scan_paths))
-    expected = contract.expected_findings if contract is not None else frozenset()
-    missing = expected - observed
-    if missing:
-        raise SecretGateError(
-            "detect-secrets 未观测到语义变异 manifest 固定的 "
-            f"{EXPECTED_SEMANTIC_WAIVERS} 条哈希 finding，疑似跳过了输入。"
-        )
+    contracts = (
+        ("语义变异", EXPECTED_SEMANTIC_WAIVERS, semantic_contract),
+        ("等价 mutant", EXPECTED_MUTATION_WAIVERS, mutation_contract),
+    )
+    for label, count, contract in contracts:
+        if contract is not None and contract.expected_findings - observed:
+            raise SecretGateError(
+                f"detect-secrets 未观测到{label} manifest 固定的 "
+                f"{count} 条哈希 finding，疑似跳过了输入。"
+            )
+    expected = frozenset(
+        finding
+        for _label, _count, contract in contracts
+        if contract is not None
+        for finding in contract.expected_findings
+    )
     unexpected = observed - expected
     if unexpected:
         locations = ", ".join(
@@ -826,7 +979,12 @@ def _evaluate_findings(
         raise SecretGateError(f"发现 {len(unexpected)} 个未获证明的疑似秘密，涉及：{locations}。")
     return SecretScanEvidence(
         waived_findings=len(expected),
-        manifest_sha256=contract.manifest_sha256 if contract is not None else None,
+        manifest_sha256=(
+            semantic_contract.manifest_sha256 if semantic_contract is not None else None
+        ),
+        mutation_manifest_sha256=(
+            mutation_contract.manifest_sha256 if mutation_contract is not None else None
+        ),
     )
 
 
@@ -855,7 +1013,8 @@ def scan_repository(
                 _write_staged_snapshot(snapshot, captured)
                 layout = _snapshot_layout(snapshot, captured)
                 _seal_staged_snapshot(layout)
-                contract = _build_semantic_waiver_contract(snapshot, scan_paths)
+                semantic_contract = _build_semantic_waiver_contract(snapshot, scan_paths)
+                mutation_contract = _build_mutation_waiver_contract(snapshot, scan_paths)
                 results = _run_detect_secrets(snapshot, scratch, scan_paths, runner)
                 _assert_staged_snapshot_unchanged(snapshot, captured)
                 _assert_live_inputs_unchanged(
@@ -864,7 +1023,12 @@ def scan_repository(
                     captured,
                     git,
                 )
-                return _evaluate_findings(results, scan_paths, contract)
+                return _evaluate_findings(
+                    results,
+                    scan_paths,
+                    semantic_contract,
+                    mutation_contract,
+                )
             finally:
                 if layout is not None:
                     _unseal_staged_snapshot(layout)
@@ -894,9 +1058,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "findings": 0,
                 "waived_findings": evidence.waived_findings,
                 "waiver_contract": (
-                    WAIVER_CONTRACT_VERSION if evidence.manifest_sha256 is not None else None
+                    WAIVER_CONTRACT_VERSION
+                    if evidence.manifest_sha256 is not None
+                    or evidence.mutation_manifest_sha256 is not None
+                    else None
                 ),
                 "manifest_sha256": evidence.manifest_sha256,
+                "mutation_manifest_sha256": evidence.mutation_manifest_sha256,
             },
             ensure_ascii=False,
         )

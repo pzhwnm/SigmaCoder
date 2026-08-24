@@ -278,6 +278,32 @@ def _assert_domain_failure(
     assert str(error) == expected_message
 
 
+def _assert_public_multi_malformed_failure(
+    events: list[dict[str, object]],
+    applicable_codes: frozenset[str],
+    *,
+    checkpoint: object | None = None,
+) -> None:
+    """断言公开的多重畸形契约，不约束私有首错与诊断文案。"""
+
+    events_before = deepcopy(events)
+    checkpoint_before = deepcopy(checkpoint)
+    projection_before = (
+        deepcopy(checkpoint.get("projection")) if isinstance(checkpoint, Mapping) else None
+    )
+
+    with pytest.raises(Exception) as captured:
+        EventsApi().restore_task_projection(events, checkpoint=checkpoint)
+
+    error = captured.value
+    assert type(error).__name__ == "DomainValidationError"
+    assert getattr(error, "code", None) in applicable_codes
+    assert events == events_before
+    assert checkpoint == checkpoint_before
+    if isinstance(checkpoint, Mapping):
+        assert checkpoint.get("projection") == projection_before
+
+
 DAMAGE_KINDS = (
     "DELETE_MIDDLE_SEQUENCE",
     "DUPLICATE_SEQUENCE",
@@ -597,7 +623,138 @@ def test_envelope_validation_matrix_has_stable_codes_and_messages() -> None:
         )
 
 
-def test_compound_failures_follow_the_specified_first_error_priority() -> None:
+def test_public_multi_malformed_contract_fails_closed_without_side_effects() -> None:
+    """公开契约只约束稳定失败集合；前置畸形之间的首错选择是私有细节。"""
+
+    cases: list[tuple[list[dict[str, object]], frozenset[str]]] = []
+
+    schema_and_identifier = authorization_events()
+    schema_and_identifier[0]["event_type"] = "UnknownEventV1"
+    schema_and_identifier[0]["event_id"] = "not-a-uuid"
+    cases.append(
+        (
+            schema_and_identifier,
+            frozenset({"UNSUPPORTED_EVENT_SCHEMA", "EVENT_ENVELOPE_INVALID"}),
+        )
+    )
+
+    row_schema_and_envelope = authorization_events()
+    row_schema_and_envelope[0]["actor"] = "model"
+    row_schema_and_envelope[1]["event_type"] = "UnknownEventV1"
+    cases.append(
+        (
+            row_schema_and_envelope,
+            frozenset({"EVENT_ENVELOPE_INVALID", "UNSUPPORTED_EVENT_SCHEMA"}),
+        )
+    )
+
+    task_and_identifier = authorization_events()
+    task_and_identifier[1]["task_id"] = "99999999-9999-4999-8999-999999999999"
+    task_and_identifier[1]["event_id"] = "not-a-uuid"
+    cases.append(
+        (
+            task_and_identifier,
+            frozenset({"EVENT_TASK_ID_MISMATCH", "EVENT_ENVELOPE_INVALID"}),
+        )
+    )
+
+    identity_and_sequence = authorization_events()
+    identity_and_sequence[2]["event_id"] = identity_and_sequence[1]["event_id"]
+    identity_and_sequence[2]["sequence"] = 2
+    cases.append(
+        (
+            identity_and_sequence,
+            frozenset({"EVENT_ID_DUPLICATE", "EVENT_SEQUENCE_DUPLICATE"}),
+        )
+    )
+
+    sequence_and_chain = authorization_events()
+    sequence_and_chain.pop(1)
+    sequence_and_chain[1]["previous_hash"] = "f" * 64
+    cases.append(
+        (
+            sequence_and_chain,
+            frozenset({"EVENT_SEQUENCE_GAP", "EVENT_PREVIOUS_HASH_MISMATCH"}),
+        )
+    )
+
+    previous_and_hash = authorization_events()
+    previous_and_hash[1]["previous_hash"] = "f" * 64
+    previous_and_hash[1]["event_hash"] = "f" * 64
+    cases.append(
+        (
+            previous_and_hash,
+            frozenset({"EVENT_PREVIOUS_HASH_MISMATCH", "EVENT_HASH_MISMATCH"}),
+        )
+    )
+
+    hash_phases = authorization_events()
+    hash_phases[0]["event_hash"] = "f" * 64
+    hash_phases[2]["previous_hash"] = "e" * 64
+    cases.append(
+        (
+            hash_phases,
+            frozenset({"EVENT_PREVIOUS_HASH_MISMATCH", "EVENT_HASH_MISMATCH"}),
+        )
+    )
+
+    hash_and_payload = authorization_events()
+    payload = as_mapping(hash_and_payload[0]["payload"])
+    payload["source_dirty"] = 1
+    hash_and_payload[0]["payload"] = payload
+    cases.append(
+        (
+            hash_and_payload,
+            frozenset({"EVENT_HASH_MISMATCH", "EVENT_PAYLOAD_INVALID"}),
+        )
+    )
+
+    payload_and_causation = authorization_events()
+    payload = as_mapping(payload_and_causation[1]["payload"])
+    payload["proposed_action_digest"] = "f" * 64
+    payload_and_causation[1]["payload"] = payload
+    payload_and_causation[1]["causation_id"] = CORRELATION_ID
+    payload_and_causation = rehash_chain(payload_and_causation)
+    cases.append(
+        (
+            payload_and_causation,
+            frozenset({"EVENT_PAYLOAD_INVALID", "EVENT_CAUSATION_INVALID"}),
+        )
+    )
+
+    causation_and_transition = authorization_events()
+    second_type = causation_and_transition[1]["event_type"]
+    second_payload = causation_and_transition[1]["payload"]
+    causation_and_transition[1]["event_type"] = causation_and_transition[2]["event_type"]
+    causation_and_transition[1]["payload"] = causation_and_transition[2]["payload"]
+    causation_and_transition[2]["event_type"] = second_type
+    causation_and_transition[2]["payload"] = second_payload
+    causation_and_transition[1]["causation_id"] = CORRELATION_ID
+    causation_and_transition = rehash_chain(causation_and_transition)
+    cases.append(
+        (
+            causation_and_transition,
+            frozenset({"EVENT_CAUSATION_INVALID", "EVENT_TRANSITION_INVALID"}),
+        )
+    )
+
+    restored = as_mapping(EventsApi().restore_task_projection(authorization_events()))
+    checkpoint_template = deepcopy(as_mapping(restored["checkpoint"]))
+
+    for events, applicable_codes in cases:
+        for physical_order in (events, list(reversed(events))):
+            candidate = deepcopy(physical_order)
+            checkpoint = deepcopy(checkpoint_template)
+            _assert_public_multi_malformed_failure(
+                candidate,
+                applicable_codes,
+                checkpoint=checkpoint,
+            )
+
+
+def test_private_regression_compound_failures_keep_current_first_error_priority() -> None:
+    """私有回归锁定当前诊断便利性，不发布为多重畸形的首错协议。"""
+
     cases: list[tuple[list[dict[str, object]], str, str]] = []
 
     schema_before_uuid = authorization_events()

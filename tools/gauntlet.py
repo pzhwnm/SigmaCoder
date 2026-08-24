@@ -27,8 +27,8 @@ if __package__:
     )
     from tools.trusted_tools import TrustedGit, TrustedToolError, resolve_trusted_uv
 else:  # pragma: no cover - 由真实脚本入口覆盖
-    from check_junit import CORE_PROPERTY_NODEIDS  # type: ignore[no-redef]
-    from repo_lease import (  # type: ignore[no-redef]
+    from check_junit import CORE_PROPERTY_NODEIDS  # type: ignore[import-not-found,no-redef]
+    from repo_lease import (  # type: ignore[import-not-found,no-redef]
         REPOSITORY_LEASE_FILE,
         REPOSITORY_LEASE_TOKEN_ENV,
         RepositoryLeaseError,
@@ -40,10 +40,30 @@ else:  # pragma: no cover - 由真实脚本入口覆盖
         resolve_trusted_uv,
     )
 
-SPEC_VERSION = "r4"
+SPEC_VERSION = "r5"
 PROFILE_UBUNTU = "ubuntu-tier3"
 PROFILE_WINDOWS = "windows-compat"
 GAUNTLET_LOCK_FILE = REPOSITORY_LEASE_FILE
+SPEC_PATH = "docs/specs/T01-persistent-coding-task.md"
+MUTATION_EQUIVALENTS_PATH = "tools/mutation_equivalents.json"
+MUTATION_RUNNER_PATH = "tools/run_mutation_profile.py"
+MUTATION_EQUIVALENCE_CHECKER_PATH = "tools/check_mutation_equivalents.py"
+MUTATION_REPORT_CHECKER_PATH = "tools/check_mutation_reports.py"
+MUTATION_EQUIVALENT_MANIFEST_ID = "T01-events-equivalent-mutants-v1"
+MUTATION_EQUIVALENT_COUNT = 49
+MUTATION_EQUIVALENT_NAMES_SHA256 = "".join(
+    (
+        "3efbac39",
+        "32d88e1a",
+        "6d063d8b",
+        "4752399b",
+        "6d1b8c86",
+        "769f34c7",
+        "cce0548f",
+        "2b4cf7e5",
+    )
+)
+EVENT_MUTANT_COUNT = 1601
 
 
 class GauntletError(RuntimeError):
@@ -84,6 +104,11 @@ class RepositoryBinding:
     uv_lock_sha256: str
     profile_manifest_sha256: str
     mutation_profiles_sha256: str
+    spec_sha256: str
+    mutation_equivalents_sha256: str
+    mutation_runner_sha256: str
+    mutation_equivalence_checker_sha256: str
+    mutation_report_checker_sha256: str
     protected_state_sha256: str
 
 
@@ -196,7 +221,10 @@ def build_manifest(profile: str) -> tuple[Layer, ...]:
                 "tests/unit/test_gauntlet_negative_controls.py",
                 "tests/unit/test_gauntlet_runner.py",
                 "tests/unit/test_junit_checker.py",
+                "tests/unit/test_mutation_equivalents.py",
                 "tests/unit/test_mutation_profile.py",
+                "tests/unit/test_mutation_reports_r5.py",
+                "tests/unit/test_mutation_runner_r5.py",
                 "tests/unit/test_semantic_mutants.py",
                 "tests/unit/test_semantic_report.py",
                 "tests/unit/test_source_state.py",
@@ -380,6 +408,16 @@ def build_manifest(profile: str) -> tuple[Layer, ...]:
     ]
     if profile == PROFILE_UBUNTU:
         source_state_commands.append(
+            (
+                "uv",
+                "run",
+                "--frozen",
+                "python",
+                "-m",
+                "tools.check_mutation_equivalents",
+            )
+        )
+        source_state_commands.append(
             ("uv", "run", "--frozen", "python", "-m", "tools.check_mutation_reports")
         )
         source_state_commands.append(
@@ -534,6 +572,17 @@ def _capture_repository_binding(
             "tools/mutation_profiles.json",
         )
     ).hexdigest()
+    explicit_r5_files = {
+        "spec_sha256": SPEC_PATH,
+        "mutation_equivalents_sha256": MUTATION_EQUIVALENTS_PATH,
+        "mutation_runner_sha256": MUTATION_RUNNER_PATH,
+        "mutation_equivalence_checker_sha256": MUTATION_EQUIVALENCE_CHECKER_PATH,
+        "mutation_report_checker_sha256": MUTATION_REPORT_CHECKER_PATH,
+    }
+    explicit_r5_digests = {
+        name: hashlib.sha256(_protected_file_bytes(repo / relative, relative)).hexdigest()
+        for name, relative in explicit_r5_files.items()
+    }
     profile_manifest_sha256 = _manifest_digest(profile, layers)
     components = {
         "git_head": git_head,
@@ -543,6 +592,7 @@ def _capture_repository_binding(
         "mutation_profiles_sha256": mutation_profiles_sha256,
         "profile_manifest_sha256": profile_manifest_sha256,
         "uv_lock_sha256": uv_lock_sha256,
+        **explicit_r5_digests,
     }
     protected_state_sha256 = hashlib.sha256(
         json.dumps(
@@ -560,6 +610,13 @@ def _capture_repository_binding(
         uv_lock_sha256=uv_lock_sha256,
         profile_manifest_sha256=profile_manifest_sha256,
         mutation_profiles_sha256=mutation_profiles_sha256,
+        spec_sha256=explicit_r5_digests["spec_sha256"],
+        mutation_equivalents_sha256=explicit_r5_digests["mutation_equivalents_sha256"],
+        mutation_runner_sha256=explicit_r5_digests["mutation_runner_sha256"],
+        mutation_equivalence_checker_sha256=explicit_r5_digests[
+            "mutation_equivalence_checker_sha256"
+        ],
+        mutation_report_checker_sha256=explicit_r5_digests["mutation_report_checker_sha256"],
         protected_state_sha256=protected_state_sha256,
     )
 
@@ -712,6 +769,15 @@ def _is_mutation_report_checker(command: Sequence[str]) -> bool:
     )
 
 
+def _is_mutation_equivalence_checker(command: Sequence[str]) -> bool:
+    return any(
+        item == "-m"
+        and index + 1 < len(command)
+        and command[index + 1] == "tools.check_mutation_equivalents"
+        for index, item in enumerate(command)
+    )
+
+
 def _is_semantic_report_checker(command: Sequence[str]) -> bool:
     return any(
         item == "-m"
@@ -756,6 +822,132 @@ def _is_lower_sha256(value: object) -> bool:
     )
 
 
+def _strict_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise GauntletError(f"{label} 必须是整数且不得用布尔值冒充。")
+    return value
+
+
+def _is_lower_git_oid(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) in {40, 64}
+        and all(("0" <= character <= "9") or ("a" <= character <= "f") for character in value)
+    )
+
+
+def _validate_mutation_equivalence_checker_output(payload: object) -> None:
+    expected_fields = {
+        "ok",
+        "schema_version",
+        "manifest_id",
+        "manifest_sha256",
+        "approved_equivalents",
+        "approved_names_sha256",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_fields:
+        raise GauntletError("等价 mutant checker JSON 顶层契约无效。")
+    approved = payload.get("approved_equivalents")
+    schema_version = payload.get("schema_version")
+    if (
+        payload.get("ok") is not True
+        or schema_version != 1
+        or isinstance(schema_version, bool)
+        or payload.get("manifest_id") != MUTATION_EQUIVALENT_MANIFEST_ID
+        or not _is_lower_sha256(payload.get("manifest_sha256"))
+        or approved != MUTATION_EQUIVALENT_COUNT
+        or isinstance(approved, bool)
+        or payload.get("approved_names_sha256") != MUTATION_EQUIVALENT_NAMES_SHA256
+    ):
+        raise GauntletError("等价 mutant checker JSON 未证明精确 49 项获批集合。")
+
+
+def _validate_mutation_report_entry(
+    value: object,
+    *,
+    profile_name: str,
+) -> str:
+    expected_fields = {
+        "report_sha256",
+        "git_head",
+        "mutants",
+        "raw_survived",
+        "approved_equivalents",
+        "unexpected_non_killed",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        raise GauntletError(f"{profile_name} mutation report 摘要字段无效。")
+    numeric_fields = (
+        "mutants",
+        "raw_survived",
+        "approved_equivalents",
+        "unexpected_non_killed",
+    )
+    git_head = value.get("git_head")
+    if (
+        not _is_lower_sha256(value.get("report_sha256"))
+        or not _is_lower_git_oid(git_head)
+        or any(
+            isinstance(value.get(field), bool) or not isinstance(value.get(field), int)
+            for field in numeric_fields
+        )
+    ):
+        raise GauntletError(f"{profile_name} mutation report 摘要类型或指纹无效。")
+    assert isinstance(git_head, str)
+    if profile_name == "events":
+        expected_numeric = {
+            "mutants": EVENT_MUTANT_COUNT,
+            "raw_survived": MUTATION_EQUIVALENT_COUNT,
+            "approved_equivalents": MUTATION_EQUIVALENT_COUNT,
+            "unexpected_non_killed": 0,
+        }
+        if any(value[field] != expected for field, expected in expected_numeric.items()):
+            raise GauntletError("events mutation report 未透明证明 49 个获批 survivor。")
+    elif (
+        value["mutants"] <= 0
+        or value["raw_survived"] != 0
+        or value["approved_equivalents"] != 0
+        or value["unexpected_non_killed"] != 0
+    ):
+        raise GauntletError("task-service mutation report 未证明零 survivor。")
+    return git_head
+
+
+def _validate_mutation_report_checker_output(payload: object) -> None:
+    expected_fields = {
+        "ok",
+        "schema_version",
+        "spec_version",
+        "manifest_sha256",
+        "approved_equivalents",
+        "reports",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_fields:
+        raise GauntletError("mutation 双报告 checker JSON 顶层契约无效。")
+    schema_version = payload.get("schema_version")
+    approved = payload.get("approved_equivalents")
+    reports = payload.get("reports")
+    if (
+        payload.get("ok") is not True
+        or schema_version != 2
+        or isinstance(schema_version, bool)
+        or payload.get("spec_version") != SPEC_VERSION
+        or not _is_lower_sha256(payload.get("manifest_sha256"))
+        or approved != MUTATION_EQUIVALENT_COUNT
+        or isinstance(approved, bool)
+        or not isinstance(reports, dict)
+        or set(reports) != {"events", "task-service"}
+    ):
+        raise GauntletError("mutation 双报告 checker JSON 未证明 r5 精确集合契约。")
+    event_head = _validate_mutation_report_entry(reports["events"], profile_name="events")
+    task_head = _validate_mutation_report_entry(
+        reports["task-service"],
+        profile_name="task-service",
+    )
+    if event_head != task_head:
+        raise GauntletError("两份 mutation report 未绑定同一个 Git HEAD。")
+
+
 def _validate_hypothesis_evidence(value: object) -> None:
     if not isinstance(value, dict) or set(value) != {
         "contract_version",
@@ -792,22 +984,21 @@ def _validate_hypothesis_evidence(value: object) -> None:
         }:
             raise GauntletError("Hypothesis 单属性证据字段无效。")
         nodeid = property_evidence.get("nodeid")
-        integers = {
-            name: property_evidence.get(name)
-            for name in ("passing", "failing", "invalid", "max_examples")
-        }
+        passing = _strict_integer(property_evidence.get("passing"), "Hypothesis passing")
+        failing = _strict_integer(property_evidence.get("failing"), "Hypothesis failing")
+        invalid = _strict_integer(property_evidence.get("invalid"), "Hypothesis invalid")
+        max_examples = _strict_integer(
+            property_evidence.get("max_examples"),
+            "Hypothesis max_examples",
+        )
         if (
             not isinstance(nodeid, str)
             or not nodeid
             or nodeid in nodeids
-            or any(
-                isinstance(number, bool) or not isinstance(number, int)
-                for number in integers.values()
-            )
-            or integers["passing"] < 200
-            or integers["failing"] != 0
-            or integers["invalid"] < 0
-            or integers["max_examples"] < 200
+            or passing < 200
+            or failing != 0
+            or invalid < 0
+            or max_examples < 200
             or property_evidence.get("shrink") != "NOT_APPLICABLE"
             or not _is_lower_sha256(property_evidence.get("stats_sha256"))
         ):
@@ -828,14 +1019,18 @@ def _validate_junit_checker_output(payload: object, *, require_hypothesis: bool)
     expected_fields = {"path", "sha256", "tests", "failures", "errors", "skipped"}
     if not isinstance(report, dict) or set(report) != expected_fields:
         raise GauntletError("JUnit checker JSON 报告字段无效。")
-    numeric = {name: report.get(name) for name in ("tests", "failures", "errors", "skipped")}
+    tests = _strict_integer(report.get("tests"), "JUnit tests")
+    failures = _strict_integer(report.get("failures"), "JUnit failures")
+    errors = _strict_integer(report.get("errors"), "JUnit errors")
+    skipped = _strict_integer(report.get("skipped"), "JUnit skipped")
     if (
         not isinstance(report.get("path"), str)
         or not report["path"]
         or not _is_lower_sha256(report.get("sha256"))
-        or any(isinstance(value, bool) or not isinstance(value, int) for value in numeric.values())
-        or numeric["tests"] <= 0
-        or any(numeric[name] != 0 for name in ("failures", "errors", "skipped"))
+        or tests <= 0
+        or failures != 0
+        or errors != 0
+        or skipped != 0
     ):
         raise GauntletError("JUnit checker JSON 未证明 tests>0 且零失败、错误、跳过。")
     if require_hypothesis:
@@ -844,13 +1039,14 @@ def _validate_junit_checker_output(payload: object, *, require_hypothesis: bool)
 
 def _validate_json_command_output(command: Sequence[str], stdout: str) -> object | None:
     if not (
-        _is_mutation_report_checker(command)
+        _is_mutation_equivalence_checker(command)
+        or _is_mutation_report_checker(command)
         or _is_semantic_report_checker(command)
         or _is_junit_checker(command)
     ):
         return None
     try:
-        payload = json.loads(stdout)
+        payload: object = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise GauntletError("结构化 checker 未输出有效 JSON。") from exc
     if _is_junit_checker(command):
@@ -858,6 +1054,9 @@ def _validate_json_command_output(command: Sequence[str], stdout: str) -> object
             payload,
             require_hypothesis="--hypothesis-contract=t01-core-v1" in command,
         )
+        return payload
+    if _is_mutation_equivalence_checker(command):
+        _validate_mutation_equivalence_checker_output(payload)
         return payload
     if _is_semantic_report_checker(command):
         if (
@@ -876,16 +1075,7 @@ def _validate_json_command_output(command: Sequence[str], stdout: str) -> object
         ):
             raise GauntletError("semantic mutation checker JSON 未证明八类有效报告。")
         return payload
-    if not isinstance(payload, dict) or set(payload) != {"ok", "reports"}:
-        raise GauntletError("mutation 双报告 checker JSON 顶层契约无效。")
-    reports = payload.get("reports")
-    if (
-        payload.get("ok") is not True
-        or not isinstance(reports, dict)
-        or set(reports) != {"events", "task-service"}
-        or not all(_is_lower_sha256(value) for value in reports.values())
-    ):
-        raise GauntletError("mutation 双报告 checker JSON 未证明两份有效报告。")
+    _validate_mutation_report_checker_output(payload)
     return payload
 
 
@@ -920,6 +1110,34 @@ def _execute_with_state_guard(
     return result
 
 
+def _record_structured_evidence(
+    command: Sequence[str],
+    stdout: str,
+    evidence_items: list[object],
+    manifest_bindings: dict[str, str],
+) -> None:
+    evidence = _validate_json_command_output(command, stdout)
+    if evidence is None:
+        return
+    evidence_items.append(evidence)
+    if _is_mutation_equivalence_checker(command):
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("manifest_sha256"), str):
+            raise GauntletError("等价 mutant checker 缺少 manifest 指纹。")
+        manifest_bindings["equivalents"] = evidence["manifest_sha256"]
+    elif _is_mutation_report_checker(command):
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("manifest_sha256"), str):
+            raise GauntletError("mutation report checker 缺少 manifest 指纹。")
+        manifest_bindings["reports"] = evidence["manifest_sha256"]
+
+
+def _validate_manifest_checker_link(manifest_bindings: dict[str, str]) -> None:
+    if (
+        set(manifest_bindings) == {"equivalents", "reports"}
+        and manifest_bindings["equivalents"] != manifest_bindings["reports"]
+    ):
+        raise GauntletError("等价清单 checker 与 mutation 报告 checker 未绑定同一 manifest。")
+
+
 def run_layer(
     layer: Layer,
     repo: Path,
@@ -933,6 +1151,7 @@ def run_layer(
     digest = hashlib.sha256()
     saw_output = False
     structured_evidence: list[object] = []
+    manifest_bindings: dict[str, str] = {}
     for command_index, command in enumerate(layer.commands, start=1):
         result = _execute_with_state_guard(
             command,
@@ -965,9 +1184,13 @@ def run_layer(
             raise GauntletError(
                 f"层 {layer.name} 命令退出码为 {result.returncode}：{' '.join(command)}"
             )
-        evidence = _validate_json_command_output(command, result.stdout)
-        if evidence is not None:
-            structured_evidence.append(evidence)
+        _record_structured_evidence(
+            command,
+            result.stdout,
+            structured_evidence,
+            manifest_bindings,
+        )
+    _validate_manifest_checker_link(manifest_bindings)
     if not saw_output:
         raise GauntletError(f"层 {layer.name} 的命令全部以 0 退出但未产生任何输出。")
     cleanup_paths(repo, layer.cleanup_after)
@@ -1018,6 +1241,20 @@ def run_gauntlet(
                     f"层 {layer.name} 执行前，",
                 )
                 print(f"\n=== Gauntlet 层：{layer.name} ===")
+
+                def guard(
+                    command_phase: str,
+                    layer_name: str = layer.name,
+                ) -> None:
+                    _verify_repository_binding(
+                        repo,
+                        profile,
+                        layers,
+                        git,
+                        binding,
+                        f"层 {layer_name} {command_phase}，",
+                    )
+
                 results.append(
                     run_layer(
                         layer,
@@ -1025,16 +1262,7 @@ def run_gauntlet(
                         runner=runner,
                         repository_lease_token=lease.token,
                         trusted_uv=trusted_uv,
-                        state_guard=lambda command_phase, layer_name=layer.name: (
-                            _verify_repository_binding(
-                                repo,
-                                profile,
-                                layers,
-                                git,
-                                binding,
-                                f"层 {layer_name} {command_phase}，",
-                            )
-                        ),
+                        state_guard=guard,
                     )
                 )
                 _verify_repository_binding(
