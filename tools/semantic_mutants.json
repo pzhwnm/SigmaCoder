@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "report_path": "mutation-reports/semantic.json",
+  "timeout_seconds": 300,
+  "mutants": [
+    {
+      "id": "SEM001_SEQUENCE_CONTINUITY",
+      "category": "sequence_continuity",
+      "source": "src/sigmacoder/domain/events.py",
+      "expected_source_sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480",
+      "expected_mutant_sha256": "9dc0c2fb6eb965ec7be3dd4f5159d6270a1ea00497d68df804d6b03ea65352b1",
+      "selectors": [
+        "tests/property/test_event_generated_properties.py::test_generated_damage_fails_closed_and_physical_order_is_irrelevant"
+      ],
+      "old": "    if [_event_int(event, \"sequence\") for event in ordered] != expected:\n        _raise(\"EVENT_SEQUENCE_GAP\", \"事件流的逻辑 sequence 存在缺口。\")",
+      "new": "    if False and [_event_int(event, \"sequence\") for event in ordered] != expected:\n        _raise(\"EVENT_SEQUENCE_GAP\", \"事件流的逻辑 sequence 存在缺口。\")"
+    },
+    {
+      "id": "SEM002_PREVIOUS_HASH",
+      "category": "previous_hash",
+      "source": "src/sigmacoder/domain/events.py",
+      "expected_source_sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480",
+      "expected_mutant_sha256": "98baf1de7eb9d55716a67a253464dbb34dc039e15998ccd97f15d984f87acf97",
+      "selectors": [
+        "tests/property/test_event_generated_properties.py::test_generated_damage_fails_closed_and_physical_order_is_irrelevant"
+      ],
+      "old": "        if _event_text(event, \"previous_hash\") != previous_hash:\n            _raise(\"EVENT_PREVIOUS_HASH_MISMATCH\", \"事件 previous_hash 与前序事实不一致。\")",
+      "new": "        if False and _event_text(event, \"previous_hash\") != previous_hash:\n            _raise(\"EVENT_PREVIOUS_HASH_MISMATCH\", \"事件 previous_hash 与前序事实不一致。\")"
+    },
+    {
+      "id": "SEM003_HASH_EQUALITY",
+      "category": "event_hash_equality",
+      "source": "src/sigmacoder/domain/events.py",
+      "expected_source_sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480",
+      "expected_mutant_sha256": "e9776821ddf75c2942dc30a4364b9a82d9ad16a099d71a91a19f6429447521a7",
+      "selectors": [
+        "tests/property/test_event_generated_properties.py::test_same_authoritative_event_bytes_have_exact_projection_and_round_trip"
+      ],
+      "old": "        if _event_text(event, \"event_hash\") != calculated:\n            _raise(\"EVENT_HASH_MISMATCH\", \"事件 event_hash 与规范化内容不一致。\")",
+      "new": "        if _event_text(event, \"event_hash\") == calculated:\n            _raise(\"EVENT_HASH_MISMATCH\", \"事件 event_hash 与规范化内容不一致。\")"
+    },
+    {
+      "id": "SEM004_BAD_EVENT_CONTINUES",
+      "category": "bad_event_continuation",
+      "source": "src/sigmacoder/domain/events.py",
+      "expected_source_sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480",
+      "expected_mutant_sha256": "d1ac5a0a91e1287cab0d62e4a8d5ccf89acf86130429a6227dcf1f54f71affe4",
+      "selectors": [
+        "tests/property/test_event_generated_properties.py::test_generated_damage_fails_closed_and_physical_order_is_irrelevant"
+      ],
+      "old": "    _validate_payloads(ordered)",
+      "new": "    try:\n        _validate_payloads(ordered)\n    except DomainValidationError:\n        pass"
+    },
+    {
+      "id": "SEM005_FROZEN_BASELINE",
+      "category": "frozen_baseline",
+      "source": "src/sigmacoder/adapters/git_workspace.py",
+      "expected_source_sha256": "d064a594358d73cbeee1db1f2a19b32ce07774c84a6ceb4a8717f43d497be02e",
+      "expected_mutant_sha256": "cd65ac3c176011efbbdc824e81974eb4902bc7549b386b96e5805ffa21157eae",
+      "selectors": [
+        "tests/integration/test_task_lifecycle.py::test_explicit_commit_baseline_is_used_even_when_source_branch_is_newer"
+      ],
+      "old": "                    str(workspace),\n                    repository.baseline_commit,",
+      "new": "                    str(workspace),\n                    \"HEAD\","
+    },
+    {
+      "id": "SEM006_SOURCE_FINGERPRINT",
+      "category": "source_fingerprint",
+      "source": "src/sigmacoder/adapters/git_workspace.py",
+      "expected_source_sha256": "d064a594358d73cbeee1db1f2a19b32ce07774c84a6ceb4a8717f43d497be02e",
+      "expected_mutant_sha256": "70cc2e738a75ac7eeb299574fd1e361f0525dd8fd325562775b51ede99f12d78",
+      "selectors": [
+        "tests/unit/test_git_workspace_edges.py::test_filter_source_change_and_data_root_guards"
+      ],
+      "old": "        if expected != actual:\n            raise GitWorkspaceError(\n                \"SOURCE_WORKTREE_CHANGED\",",
+      "new": "        if False and expected != actual:\n            raise GitWorkspaceError(\n                \"SOURCE_WORKTREE_CHANGED\","
+    },
+    {
+      "id": "SEM007_INVALID_CHECKPOINT",
+      "category": "invalid_checkpoint",
+      "source": "src/sigmacoder/domain/events.py",
+      "expected_source_sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480",
+      "expected_mutant_sha256": "0b6f1224482be99b32728d6a2e6010bfd38d8ee7bc8462bf1727c3f4acaf7bc7",
+      "selectors": [
+        "tests/unit/test_projection_checkpoint.py::test_corrupt_checkpoint_hash_falls_back_to_full_replay"
+      ],
+      "old": "    return calculate_checkpoint_hash(checkpoint) == checkpoint[\"checkpoint_hash\"]",
+      "new": "    return True"
+    },
+    {
+      "id": "SEM008_RUNTIME_RESTORED",
+      "category": "runtime_restoration",
+      "source": "src/sigmacoder/domain/events.py",
+      "expected_source_sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480",
+      "expected_mutant_sha256": "9e3e749e561ce9391c32c819cc6491525cad5d46bcebf07e23b5cbdb21a3489a",
+      "selectors": [
+        "tests/property/test_event_chain_properties.py::test_all_durable_terminal_paths_match_full_spec_oracle"
+      ],
+      "old": "        \"runtime\": {\n            \"process_restored\": False,\n            \"terminal_restored\": False,\n            \"memory_restored\": False,\n            \"network_transaction_restored\": False,\n        },",
+      "new": "        \"runtime\": {\n            \"process_restored\": True,\n            \"terminal_restored\": True,\n            \"memory_restored\": True,\n            \"network_transaction_restored\": True,\n        },"
+    }
+  ]
+}

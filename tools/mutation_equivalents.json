@@ -1,0 +1,373 @@
+{
+  "schema_version": 1,
+  "manifest_id": "T01-events-equivalent-mutants-v1",
+  "approved_spec": {
+    "path": "docs/specs/T01-persistent-coding-task.md",
+    "revision": "r5"
+  },
+  "generator": {
+    "distribution": "mutmut",
+    "version": "3.7.0",
+    "uv_lock_sha256": "029d68f7d05a56a23a7d6dbf31a18356bc674a0019e1ea62d09cfaeeebce0c43"
+  },
+  "profile": {
+    "name": "events",
+    "profile_sha256": "278d176a0a648a04a7b4d0e9cc72c7462faaf57431c5bb562aa5d301edd5dd45",
+    "expected_mutant_count": 1601,
+    "expected_mutant_names_sha256": "319603cc8eb5992cae7905956734de23ef3172a8b991fb1849f8560d346405dd",
+    "expected_equivalent_count": 49,
+    "expected_equivalent_names_sha256": "3efbac3932d88e1a6d063d8b4752399b6d1b8c86769f34c7cce0548f2b4cf7e5"
+  },
+  "category_counts": {
+    "TYPE_ONLY_CAST": 4,
+    "OBSERVATIONALLY_EQUIVALENT_RUNTIME": 14,
+    "GUARD_DOMINATED_EQUIVALENCE": 11,
+    "NON_CONTRACT_DIAGNOSTIC": 6,
+    "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK": 14
+  },
+  "equivalents": [
+    {
+      "name": "sigmacoder.domain.events.x__apply_event__mutmut_105",
+      "category": "TYPE_ONLY_CAST",
+      "reason_code": "CAST_RUNTIME_IDENTITY",
+      "reason": "typing.cast 在运行期返回原对象；该变异只改变静态类型参数，不改变 failure 投影。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_apply_event", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__event_int__mutmut_4",
+      "category": "NON_CONTRACT_DIAGNOSTIC",
+      "reason_code": "PRIVATE_DIAGNOSTIC_ONLY",
+      "reason": "只改变私有整数提取器的 TypeError 诊断文本；稳定领域错误码与拒绝结果不变。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_event_int", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__event_payload__mutmut_5",
+      "category": "NON_CONTRACT_DIAGNOSTIC",
+      "reason_code": "PRIVATE_DIAGNOSTIC_ONLY",
+      "reason": "只改变私有 payload 提取失败的诊断细节；对外仍映射为相同稳定失败。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_event_payload", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__event_payload__mutmut_6",
+      "category": "NON_CONTRACT_DIAGNOSTIC",
+      "reason_code": "PRIVATE_DIAGNOSTIC_ONLY",
+      "reason": "只改变私有 payload 类型标签的诊断文本；领域错误码、投影与副作用均不变。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_event_payload", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__event_payload__mutmut_7",
+      "category": "NON_CONTRACT_DIAGNOSTIC",
+      "reason_code": "PRIVATE_DIAGNOSTIC_ONLY",
+      "reason": "只改变不可公开依赖的低层异常文案；稳定 typed-payload 拒绝契约保持不变。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_event_payload", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__event_text__mutmut_3",
+      "category": "NON_CONTRACT_DIAGNOSTIC",
+      "reason_code": "PRIVATE_DIAGNOSTIC_ONLY",
+      "reason": "只改变私有文本提取器的 TypeError 诊断；稳定错误映射和 fail-closed 结果不变。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_event_text", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_1",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变多个前置畸形值的私有 fallback 排序 token；所有排列仍被稳定失败集合拒绝且零副作用。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_10",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "SCALAR_SORT_KEYS_EQUIVALENCE",
+      "reason": "该分支只序列化 JSON scalar；sort_keys 的变异不会改变规范字节或排序关系。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_11",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "只改变多畸形 fallback token 的私有内容级排序；不改变接受集合、单故障映射或持久状态。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_12",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "SCALAR_SORT_KEYS_EQUIVALENCE",
+      "reason": "该路径只处理 scalar，sort_keys 的替代值对输出字节无影响。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_14",
+      "category": "NON_CONTRACT_DIAGNOSTIC",
+      "reason_code": "PRIVATE_DIAGNOSTIC_ONLY",
+      "reason": "只改变私有畸形排序 token 内的类型标签；该标签不进入公共错误或投影协议。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_3",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变多个前置畸形的私有 token 结构；输入仍全部 fail closed，公共契约无差异。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_5",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变 pre-sequence 多畸形之间的私有排序材料，不改变稳定失败集合或零副作用。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_6",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "FALSEY_JSON_OPTION_EQUIVALENCE",
+      "reason": "ensure_ascii 的 None 与 False 在固定 JSON 编码器中同为 falsey，产生相同字节。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_7",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "FALSEY_JSON_OPTION_EQUIVALENCE",
+      "reason": "JSON falsey 选项的变异在受限 scalar 输入上产生完全相同的规范输出。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__fallback_sort_atom__mutmut_9",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "只改变多个独立前置畸形的私有排序碰撞方式；单故障和合法链行为保持不变。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_fallback_sort_atom", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__is_oid__mutmut_2",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "OID_SCHEMA_GUARD_DOMINATES",
+      "reason": "该变异可放过的非字符串 OID 随后仍被 object-format 或授权绑定校验拒绝。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_is_oid", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__is_portable_relative_path__mutmut_13",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "PORTABLE_PATH_GUARDS_DOMINATE",
+      "reason": "该路径分支的差异仍被组件正则、规范化或保留名 guard 拒绝。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_is_portable_relative_path", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__is_portable_relative_path__mutmut_28",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "FIRST_SPLIT_COMPONENT_EQUIVALENCE",
+      "reason": "不同 maxsplit 后都只读取索引零，首个点号前的组件完全相同。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_is_portable_relative_path", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__is_portable_relative_path__mutmut_31",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "FIRST_SPLIT_COMPONENT_EQUIVALENCE",
+      "reason": "split 的变异不改变被读取的第一个组件，因此保留名判定结果相同。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_is_portable_relative_path", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__is_portable_relative_path__mutmut_37",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "PORTABLE_PATH_GUARDS_DOMINATE",
+      "reason": "潜在差异仍由规范路径、组件格式和保留名的其他 guard 拒绝。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_is_portable_relative_path", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__is_portable_relative_path__mutmut_5",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "PORTABLE_PATH_GUARDS_DOMINATE",
+      "reason": "NFD、反斜杠、空或点组件即使绕过此判断仍被其他路径 guard 拒绝。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_is_portable_relative_path", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__is_uuid4__mutmut_1",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "UUID_SCHEMA_GUARDS_DOMINATE",
+      "reason": "调用前文本 guard 与后续 UUIDv4 版本、规范小写 round-trip 校验共同支配该差异。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_is_uuid4", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__normalized_event_copy__mutmut_2",
+      "category": "TYPE_ONLY_CAST",
+      "reason_code": "CAST_RUNTIME_IDENTITY",
+      "reason": "typing.cast 只改变静态类型视图，运行期返回同一个事件对象。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_normalized_event_copy", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__normalized_event_copy__mutmut_6",
+      "category": "TYPE_ONLY_CAST",
+      "reason_code": "CAST_RUNTIME_IDENTITY",
+      "reason": "cast 的类型参数变化不改变复制、规范化字节或事件哈希。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_normalized_event_copy", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__oid_matches_object_format__mutmut_10",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "OID_SCHEMA_GUARD_DOMINATES",
+      "reason": "非字符串 OID 在到达该差异前已由 OID schema guard 拒绝。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_oid_matches_object_format", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__oid_matches_object_format__mutmut_21",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "OBJECT_FORMAT_GUARD_DOMINATES",
+      "reason": "object_format 已被 schema 限定为 sha1 或 sha256，因此变异的 fallback 分支不可到达。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_oid_matches_object_format", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_order_key__mutmut_1",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变多个 pre-sequence 畸形的私有 order key，不影响单故障和合法链。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_order_key", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_order_key__mutmut_12",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "只改变无唯一 sequence 时畸形项之间的私有次序；全部候选仍 fail closed。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_order_key", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_order_key__mutmut_13",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变多畸形私有 order key 的碰撞方式，不改变失败集合、投影或 checkpoint。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_order_key", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_order_key__mutmut_14",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "COMMON_SECONDARY_KEY_EQUIVALENCE",
+      "reason": "无整数 sequence 的 Mapping 共享同一次键；常量整体变化不改变分区内排序关系。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_order_key", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_order_key__mutmut_2",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "只影响多个独立前置畸形的私有排序选择；稳定错误集合和零副作用保持。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_order_key", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_order_key__mutmut_4",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "PRESERVED_PARTITION_ORDER",
+      "reason": "非 Mapping rank 从 2 变为 3 后仍严格位于 rank 0 与 1 分区之后。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_order_key", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_order_key__mutmut_5",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "COMMON_SECONDARY_KEY_EQUIVALENCE",
+      "reason": "非 Mapping 项共享相同次键；把共同常量从零改一不会改变相对顺序。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_order_key", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_token__mutmut_1",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变多个前置畸形的私有 token 生成，不改变任何合法输入或单故障错误码。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_token", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_token__mutmut_10",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "只改变复合前置畸形的私有 token 内容；所有物理排列仍落入稳定拒绝集合。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_token", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_token__mutmut_13",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变 prevalidation 多故障排序 token 的私有表示，不影响持久事实或失败边界。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_token", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_token__mutmut_15",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "UTF8_CODEC_ALIAS",
+      "reason": "UTF-8 编码器名称大小写是同一 codec 别名，输出字节完全一致。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_token", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_token__mutmut_4",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "只改变多畸形 token 的私有内容级 tie-break；不改变是否拒绝、单故障映射或副作用。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_token", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_token__mutmut_6",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "UTF8_CODEC_ALIAS",
+      "reason": "utf-8 与 UTF-8 指向同一编码器，规范 token 字节不变。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_token", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__prevalidation_token__mutmut_9",
+      "category": "UNSPECIFIED_MULTI_MALFORMED_TIE_BREAK",
+      "reason_code": "PRIVATE_MULTI_FAULT_ORDER",
+      "reason": "仅改变多个前置畸形之间的私有 token 碰撞；合法链与零副作用拒绝保持不变。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_prevalidation_token", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__validated_checkpoint_prefix__mutmut_42",
+      "category": "TYPE_ONLY_CAST",
+      "reason_code": "CAST_RUNTIME_IDENTITY",
+      "reason": "typing.cast 的参数变异仅影响静态类型，运行期 checkpoint prefix 对象相同。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_validated_checkpoint_prefix", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x__validated_checkpoint_prefix__mutmut_55",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "PROJECTION_COMPARISON_DOMINATES",
+      "reason": "workspace 或 preparation 类型差异最终仍被完整期望投影字节比较拒绝。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "_validated_checkpoint_prefix", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x_canonical_json_bytes__mutmut_13",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "RESTRICTED_JSON_GUARD_DOMINATES",
+      "reason": "受限 JSON 规范化在 dumps 前已拒绝 float、NaN 与 Infinity，该选项差异不可到达。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "canonical_json_bytes", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x_canonical_json_bytes__mutmut_18",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "RESTRICTED_JSON_GUARD_DOMINATES",
+      "reason": "float 与非有限数已在规范化前置 guard 被拒绝，allow_nan 分支变化不可观察。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "canonical_json_bytes", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x_canonical_json_bytes__mutmut_21",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "UTF8_CODEC_ALIAS",
+      "reason": "UTF-8 与 utf-8 是同一 codec 别名，编码后的规范 JSON 字节相同。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "canonical_json_bytes", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x_canonical_json_bytes__mutmut_5",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "FALSEY_JSON_OPTION_EQUIVALENCE",
+      "reason": "ensure_ascii 的 None 与 False 在固定 CPython JSON 编码器中同为 falsey，输出一致。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "canonical_json_bytes", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x_canonical_json_bytes__mutmut_8",
+      "category": "OBSERVATIONALLY_EQUIVALENT_RUNTIME",
+      "reason_code": "FALSEY_JSON_OPTION_EQUIVALENCE",
+      "reason": "allow_nan 的 None 与 False 同为 falsey，且受限 JSON 不含非有限数，输出一致。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "canonical_json_bytes", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    },
+    {
+      "name": "sigmacoder.domain.events.x_restore_task_projection__mutmut_43",
+      "category": "GUARD_DOMINATED_EQUIVALENCE",
+      "reason_code": "VALIDATED_CHAIN_IDENTITY",
+      "reason": "完整耐久链已验证所有 task_id 相等且至少三项，索引零与一读取同一 task_id。",
+      "source": {"path": "src/sigmacoder/domain/events.py", "function": "restore_task_projection", "sha256": "facffbf2130ee09941b21018b99627335b40cd63a9fd9eea2f017ef26dfcf480"}
+    }
+  ]
+}

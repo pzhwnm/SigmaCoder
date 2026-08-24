@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "events": {
+      "source_paths": ["src/sigmacoder"],
+      "only_mutate": ["src/sigmacoder/domain/events.py"],
+      "test_selection": [
+        "tests/unit/test_event_chain.py",
+        "tests/unit/test_event_semantics.py",
+        "tests/unit/test_projection_checkpoint.py",
+        "tests/adversarial/test_corrupt_event_chain.py",
+        "tests/property/test_event_chain_properties.py",
+        "tests/property/test_event_generated_properties.py"
+      ],
+      "property_test_selection": [
+        "tests/property/test_event_chain_properties.py",
+        "tests/property/test_event_generated_properties.py"
+      ],
+      "timeout_seconds": 1800,
+      "timeout_multiplier": 15.0,
+      "timeout_constant": 1.0,
+      "max_children": 4,
+      "repeat": 2,
+      "cache_dir": "mutants",
+      "report_path": "mutation-reports/events.json"
+    },
+    "task-service": {
+      "source_paths": ["src/sigmacoder"],
+      "only_mutate": ["src/sigmacoder/application/task_service.py"],
+      "test_selection": [
+        "tests/unit/test_task_service_branches.py",
+        "tests/integration",
+        "tests/e2e"
+      ],
+      "property_test_selection": [],
+      "timeout_seconds": 1800,
+      "timeout_multiplier": 15.0,
+      "timeout_constant": 1.0,
+      "max_children": 4,
+      "repeat": 2,
+      "cache_dir": "mutants",
+      "report_path": "mutation-reports/task-service.json"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+# 语义变异清单按规范 LF 字节绑定 Python 源码，跨平台检出不得改写。
+.gitattributes text eol=lf
+*.py text eol=lf
+
+# T01 r5 的逐字节信任根必须在 Windows 与 Linux 检出为相同字节。
+uv.lock text eol=lf
+tools/mutation_profiles.json text eol=lf
+tools/mutation_equivalents.json text eol=lf
+docs/specs/T01-persistent-coding-task.md text eol=lf
