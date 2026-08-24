@@ -7,7 +7,7 @@ import string
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from itertools import permutations
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pytest
 from hypothesis import strategies as st
@@ -26,6 +26,8 @@ from tests.support.event_contract import (
     rehash_chain,
 )
 from tests.support.event_property_cases import EventCase
+
+from sigmacoder.application.task_service import TaskService
 
 ASCII_KEYS = st.text(alphabet=string.ascii_letters, min_size=1, max_size=12)
 EXCLUDED_CATEGORIES: tuple[Literal["Cs"], ...] = ("Cs",)
@@ -785,13 +787,85 @@ def test_payload_schema_matrix_rejects_every_value_family() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        7,
+        "relative/repository",
+        "/fixture//repository",
+        "/fixture/./repository",
+        "/fixture/../repository",
+        "/fixture/cafe\u0301",
+        r"C:\fixture/repository",
+        r"C:\fixture\..\repository",
+    ],
+)
+def test_absolute_repository_path_boundaries_fail_closed(value: object) -> None:
+    events = authorization_events(repository_realpath=cast(Any, value))
+
+    _assert_domain_failure(
+        events,
+        "EVENT_PAYLOAD_INVALID",
+        "TaskCreatedV1 payload 字段类型或取值不合法。",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        7,
+        "tasks/cafe\u0301",
+        r"tasks\name",
+        "tasks/../name",
+        "tasks//name",
+        "/tasks/name",
+        "tasks/CON",
+        "tasks/con.txt",
+        "tasks/CON.foo.bar",
+        "tasks/name.",
+        "tasks/name ",
+    ],
+)
+def test_workspace_relative_path_boundaries_fail_closed(value: object) -> None:
+    events = authorization_events(workspace_relative_path=cast(Any, value))
+
+    _assert_domain_failure(
+        events,
+        "EVENT_PAYLOAD_INVALID",
+        "TaskPreparationStartedV1 payload 字段类型或取值不合法。",
+    )
+
+
+@pytest.mark.parametrize("value", ["tasks/nameX", "tasks/XX.XX", "tasks/XX..XX"])
+def test_portable_relative_path_positive_controls_preserve_bytes(value: str) -> None:
+    actual = as_mapping(
+        EventsApi().restore_task_projection(authorization_events(workspace_relative_path=value))
+    )
+    projection = as_mapping(actual["projection"])
+    workspace = as_mapping(projection["workspace"])
+
+    assert workspace["relative_path"] == value
+
+
+def test_non_string_oid_and_uppercase_uuid4_fail_closed() -> None:
+    _assert_domain_failure(
+        authorization_events(baseline_commit=cast(Any, 7)),
+        "EVENT_PAYLOAD_INVALID",
+        "TaskCreatedV1 payload 字段类型或取值不合法。",
+    )
+    _assert_domain_failure(
+        authorization_events(task_id="AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"),
+        "EVENT_ENVELOPE_INVALID",
+        "事件标识和任务标识必须是规范 UUIDv4。",
+    )
+
+
 def test_stream_hash_causation_transition_and_binding_matrix() -> None:
     _assert_domain_failure(
         _failure_events(include_attention=False),
         "EVENT_TRANSITION_INVALID",
         "失败事实必须与注意状态在同一耐久事务完成。",
     )
-
     events = authorization_events()
     events[1]["task_id"] = "99999999-9999-4999-8999-999999999999"
     _assert_domain_failure(
@@ -930,6 +1004,11 @@ def test_stream_hash_causation_transition_and_binding_matrix() -> None:
         _assert_domain_failure(events, "EVENT_PAYLOAD_INVALID", message)
 
 
+def test_incomplete_transaction_prefixes_do_not_become_false_invalid_locations() -> None:
+    assert TaskService._first_invalid_sequence(authorization_events()) is None
+    assert TaskService._first_invalid_sequence(_failure_events()) is None
+
+
 def test_empty_and_non_mapping_stream_members_fail_with_exact_errors() -> None:
     _assert_domain_failure(
         [],
@@ -945,6 +1024,29 @@ def test_empty_and_non_mapping_stream_members_fail_with_exact_errors() -> None:
 
 def test_checkpoint_matrix_uses_only_verified_authoritative_prefixes() -> None:
     events = _prepared_events()
+    for complete_events, through in (
+        (events, 1),
+        (events, 2),
+        (_failure_events(), 4),
+    ):
+        prefix_projection = _expected_projection(complete_events[:through])
+        prefix_checkpoint: dict[str, object] = {
+            "checkpoint_version": 1,
+            "task_id": complete_events[0]["task_id"],
+            "through_sequence": through,
+            "through_event_hash": complete_events[through - 1]["event_hash"],
+            "projection_schema_version": 1,
+            "projection": deepcopy(prefix_projection),
+        }
+        prefix_checkpoint["checkpoint_hash"] = checkpoint_hash_oracle(prefix_checkpoint)
+        checkpoint_before = deepcopy(prefix_checkpoint)
+        _assert_exact_restore(
+            complete_events,
+            checkpoint=prefix_checkpoint,
+            load_mode="CHECKPOINT",
+        )
+        assert prefix_checkpoint == checkpoint_before
+
     prefix_result = as_mapping(EventsApi().restore_task_projection(events[:3]))
     prefix_checkpoint = deepcopy(as_mapping(prefix_result["checkpoint"]))
     _assert_exact_restore(events, checkpoint=prefix_checkpoint, load_mode="CHECKPOINT")
