@@ -48,3 +48,9 @@ def test_workflow_完整检出历史并保持最小权限() -> None:
     assert text.count("uses: actions/checkout@v4") == 2
     assert text.count("fetch-depth: 0") == 2
     assert "permissions:\n  contents: read\n" in text
+
+
+def test_workflow_强制python标准流使用utf8() -> None:
+    text = workflow_text()
+
+    assert 'env:\n  PYTHONUTF8: "1"\n  PYTHONIOENCODING: "utf-8"\n' in text
